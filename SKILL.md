@@ -1,6 +1,6 @@
 ---
-name: studyhard-image-gen
-description: Use this skill when a user asks Codex to generate images from text, edit or modify an existing image, or create image variations / one-image-to-many-images using the StudyHard token-api OpenAI-compatible image gateway. It submits asynchronous image tasks to /async/v1/images/generations, /edits, or /variations, starts a background poller for /v1/task/{taskId}, records task state locally, and returns generated image URLs or Markdown image previews without blocking Codex while generation runs.
+name: image-gen
+description: Use this skill when a user asks Codex to generate images from text, edit or modify an existing image, or create image variations / one-image-to-many-images using the StudyHard token-api OpenAI-compatible image gateway. It submits asynchronous image tasks to image generation, edit, and variation endpoints, starts a background poller, records task state locally, and returns generated image URLs or Markdown image previews without blocking Codex while generation runs.
 ---
 
 # StudyHard Image Gen
@@ -23,7 +23,7 @@ Environment variables are optional overrides only:
 - `STUDYHARD_IMAGE_MODEL`: override the default image model `gpt-image-2`.
 - `STUDYHARD_IMAGE_OUT_DIR`: directory for local task state files. Defaults to the system temporary directory under `studyhard-images`.
 
-If required config is missing, explain that Codex config must contain an active provider `base_url` and API key.
+If required config is missing, explain that Codex config must contain an active provider `base_url` and API key, or use the `STUDYHARD_IMAGE_BASE_URL` and `STUDYHARD_IMAGE_API_KEY` environment overrides.
 
 ## Intent Routing
 
@@ -43,31 +43,31 @@ Do not wait for image completion in the current turn unless the user explicitly 
 Text to image:
 
 ```bash
-python scripts/studyhard_image_gen.py submit-generation --prompt "<prompt>" --model "<model>" --size "1024x1024" --n 1 --watch
+python3 scripts/studyhard_image_gen.py submit-generation --prompt "<prompt>" --model "<model>" --size "1024x1024" --n 1 --watch
 ```
 
 Edit image:
 
 ```bash
-python scripts/studyhard_image_gen.py submit-edit --image "<path>" --prompt "<prompt>" --model "<model>" --size "1024x1024" --watch
+python3 scripts/studyhard_image_gen.py submit-edit --image "<path>" --prompt "<prompt>" --model "<model>" --size "1024x1024" --watch
 ```
 
 Variation:
 
 ```bash
-python scripts/studyhard_image_gen.py submit-variation --image "<path>" --model "<model>" --size "1024x1024" --n 4 --watch
+python3 scripts/studyhard_image_gen.py submit-variation --image "<path>" --model "<model>" --size "1024x1024" --n 4 --watch
 ```
 
 Check status:
 
 ```bash
-python scripts/studyhard_image_gen.py status --task-id "<task_id>" --markdown
+python3 scripts/studyhard_image_gen.py status --task-id "<task_id>" --markdown
 ```
 
 Foreground wait only when explicitly requested:
 
 ```bash
-python scripts/studyhard_image_gen.py watch --task-id "<task_id>" --timeout 180
+python3 scripts/studyhard_image_gen.py watch --task-id "<task_id>" --timeout 180
 ```
 
 ## Returning Results

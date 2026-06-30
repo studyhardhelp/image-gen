@@ -30,6 +30,14 @@ DEFAULT_INTERVAL = 5
 DEFAULT_TIMEOUT = 900
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 
+
+class UserFacingError(Exception):
+    """Error that can be shown directly to a Codex user."""
+
+
+def fail(message: str) -> None:
+    raise UserFacingError(message)
+
 def env(name: str, default: Optional[str] = None) -> Optional[str]:
     value = os.environ.get(name)
     return value if value not in (None, "") else default
@@ -44,10 +52,15 @@ def codex_home() -> Path:
 
 def load_codex_config() -> Dict[str, Any]:
     config_path = codex_home() / "config.toml"
-    if not config_path.exists() or tomllib is None:
+    if not config_path.exists():
         return {}
-    with config_path.open("rb") as fh:
-        return tomllib.load(fh)
+    if tomllib is None:
+        fail("Python 3.11 or newer is required to read Codex config.toml. Use python3.11+, or set STUDYHARD_IMAGE_BASE_URL and STUDYHARD_IMAGE_API_KEY.")
+    try:
+        with config_path.open("rb") as fh:
+            return tomllib.load(fh)
+    except Exception as exc:
+        fail(f"Could not read Codex config at {config_path}: {exc}")
 
 
 def load_codex_auth() -> Dict[str, Any]:
@@ -57,7 +70,7 @@ def load_codex_auth() -> Dict[str, Any]:
     try:
         return json.loads(auth_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        return {}
+        fail(f"Could not parse Codex auth file at {auth_path}. Check that auth.json contains valid JSON.")
 
 
 def active_provider_config(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -89,10 +102,10 @@ def require_config() -> Tuple[str, str]:
     if not api_key:
         missing.append("Codex config/auth API key")
     if missing:
-        raise SystemExit(
+        fail(
             "Missing image gateway configuration: "
             + ", ".join(missing)
-            + ". Expected CODEX_HOME/config.toml and CODEX_HOME/auth.json, or ~/.codex equivalents."
+            + ". Configure an active model_provider in CODEX_HOME/config.toml, or set STUDYHARD_IMAGE_BASE_URL and STUDYHARD_IMAGE_API_KEY."
         )
     return str(base_url).rstrip("/"), str(api_key)
 
@@ -148,10 +161,17 @@ def http_json(method: str, url: str, api_key: str, body: Optional[Dict[str, Any]
     try:
         with request.urlopen(req, timeout=120) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
-            return json.loads(raw) if raw else {}
+            try:
+                return json.loads(raw) if raw else {}
+            except json.JSONDecodeError as exc:
+                fail(f"Image gateway returned non-JSON response from {url}: {raw[:500]}")
     except error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
+        fail(f"Image gateway request failed: HTTP {exc.code} {exc.reason}. Response: {raw[:1000]}")
+    except error.URLError as exc:
+        fail(f"Could not reach image gateway at {url}: {exc.reason}")
+    except TimeoutError:
+        fail(f"Timed out while connecting to image gateway at {url}")
 
 
 def encode_multipart(fields: Dict[str, Any], files: Dict[str, Path]) -> Tuple[bytes, str]:
@@ -195,10 +215,17 @@ def http_multipart(url: str, api_key: str, fields: Dict[str, Any], files: Dict[s
     try:
         with request.urlopen(req, timeout=120) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
-            return json.loads(raw) if raw else {}
+            try:
+                return json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                fail(f"Image gateway returned non-JSON response from {url}: {raw[:500]}")
     except error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
+        fail(f"Image gateway upload failed: HTTP {exc.code} {exc.reason}. Response: {raw[:1000]}")
+    except error.URLError as exc:
+        fail(f"Could not reach image gateway at {url}: {exc.reason}")
+    except TimeoutError:
+        fail(f"Timed out while uploading to image gateway at {url}")
 
 
 def route_url(base_url: str, route_path: str) -> str:
@@ -233,7 +260,9 @@ def submit_edit(args: argparse.Namespace) -> Dict[str, Any]:
     base_url, api_key = require_config()
     image = Path(args.image)
     if not image.exists():
-        raise SystemExit(f"Image file not found: {image}")
+        fail(f"Image file not found: {image}")
+    if not image.is_file():
+        fail(f"Image path is not a file: {image}")
     fields: Dict[str, Any] = {
         "model": model_or_default(args.model),
         "prompt": args.prompt,
@@ -244,7 +273,9 @@ def submit_edit(args: argparse.Namespace) -> Dict[str, Any]:
     if args.mask:
         mask = Path(args.mask)
         if not mask.exists():
-            raise SystemExit(f"Mask file not found: {mask}")
+            fail(f"Mask file not found: {mask}")
+        if not mask.is_file():
+            fail(f"Mask path is not a file: {mask}")
         files["mask"] = mask
     return http_multipart(route_url(base_url, "/async/v1/images/edits"), api_key, fields, files)
 
@@ -253,7 +284,9 @@ def submit_variation(args: argparse.Namespace) -> Dict[str, Any]:
     base_url, api_key = require_config()
     image = Path(args.image)
     if not image.exists():
-        raise SystemExit(f"Image file not found: {image}")
+        fail(f"Image file not found: {image}")
+    if not image.is_file():
+        fail(f"Image path is not a file: {image}")
     fields: Dict[str, Any] = {
         "model": model_or_default(args.model),
         "size": args.size,
@@ -335,7 +368,10 @@ def spawn_watcher(task_id: str, interval: int, timeout: int, out_dir: Optional[s
         kwargs["creationflags"] = flags
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen(cmd, **kwargs)
+    try:
+        subprocess.Popen(cmd, **kwargs)
+    except OSError as exc:
+        fail(f"Task was submitted, but the background watcher could not be started: {exc}")
 
 
 def print_json(data: Dict[str, Any]) -> None:
@@ -369,7 +405,7 @@ def handle_submit(args: argparse.Namespace, fn) -> None:
     task_id = result.get("task_id")
     if not task_id:
         print_json(result)
-        raise SystemExit("Gateway did not return task_id")
+        fail("Image gateway did not return task_id. The raw response was printed above.")
     out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
     state = dict(result)
     state.setdefault("task_status", "submitted")
@@ -459,7 +495,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    except UserFacingError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    except KeyboardInterrupt:
+        print("Error: interrupted by user", file=sys.stderr)
+        raise SystemExit(130)
 
 
 if __name__ == "__main__":
