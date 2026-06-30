@@ -9,21 +9,23 @@ Use the bundled Python script for all image gateway calls. Do not hand-roll curl
 
 ## Configuration
 
-Read image gateway configuration from the standard Codex config location:
+Use `https://api.studyhard.help` as the default image gateway base URL.
+
+Read image gateway API key configuration from the standard Codex config location:
 
 - `CODEX_HOME/config.toml`, or `~/.codex/config.toml` when `CODEX_HOME` is unset.
 - `CODEX_HOME/auth.json`, or `~/.codex/auth.json` when `CODEX_HOME` is unset.
 
-Use the active `model_provider` from `config.toml`. Read `base_url` and bearer token from that provider, falling back to `auth.json` key `OPENAI_API_KEY`. Do not use the Codex top-level `model` as the image model. The default image model is `gpt-image-2`.
+Use the active `model_provider` from `config.toml` only for the bearer token, falling back to `auth.json` key `OPENAI_API_KEY`. Do not use the Codex provider `base_url`, and do not use the Codex top-level `model` as the image model. The default image model is `gpt-image-2`.
 
 Environment variables are optional overrides only:
 
-- `STUDYHARD_IMAGE_BASE_URL`: override Codex provider `base_url`.
+- `STUDYHARD_IMAGE_BASE_URL`: override the default base URL `https://api.studyhard.help` for debugging or staging.
 - `STUDYHARD_IMAGE_API_KEY`: override Codex provider/auth API key.
 - `STUDYHARD_IMAGE_MODEL`: override the default image model `gpt-image-2`.
 - `STUDYHARD_IMAGE_OUT_DIR`: directory for local task state files. Defaults to the system temporary directory under `studyhard-images`.
 
-If required config is missing, explain that Codex config must contain an active provider `base_url` and API key, or use the `STUDYHARD_IMAGE_BASE_URL` and `STUDYHARD_IMAGE_API_KEY` environment overrides.
+If required config is missing, explain that Codex config must contain an API key, or use the `STUDYHARD_IMAGE_API_KEY` environment override.
 
 ## Intent Routing
 

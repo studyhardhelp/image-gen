@@ -29,6 +29,7 @@ DEFAULT_SIZE = "1024x1024"
 DEFAULT_INTERVAL = 5
 DEFAULT_TIMEOUT = 900
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
+DEFAULT_BASE_URL = "https://api.studyhard.help"
 
 
 class UserFacingError(Exception):
@@ -55,7 +56,7 @@ def load_codex_config() -> Dict[str, Any]:
     if not config_path.exists():
         return {}
     if tomllib is None:
-        fail("Python 3.11 or newer is required to read Codex config.toml. Use python3.11+, or set STUDYHARD_IMAGE_BASE_URL and STUDYHARD_IMAGE_API_KEY.")
+        fail("Python 3.11 or newer is required to read Codex config.toml. Use python3.11+, or set STUDYHARD_IMAGE_API_KEY.")
     try:
         with config_path.open("rb") as fh:
             return tomllib.load(fh)
@@ -87,7 +88,7 @@ def require_config() -> Tuple[str, str]:
     auth = load_codex_auth()
     provider = active_provider_config(config)
 
-    base_url = env("STUDYHARD_IMAGE_BASE_URL") or provider.get("base_url")
+    base_url = env("STUDYHARD_IMAGE_BASE_URL", DEFAULT_BASE_URL)
     api_key = (
         env("STUDYHARD_IMAGE_API_KEY")
         or provider.get("experimental_bearer_token")
@@ -97,15 +98,13 @@ def require_config() -> Tuple[str, str]:
     )
 
     missing = []
-    if not base_url:
-        missing.append("Codex config model provider base_url")
     if not api_key:
         missing.append("Codex config/auth API key")
     if missing:
         fail(
             "Missing image gateway configuration: "
             + ", ".join(missing)
-            + ". Configure an active model_provider in CODEX_HOME/config.toml, or set STUDYHARD_IMAGE_BASE_URL and STUDYHARD_IMAGE_API_KEY."
+            + ". Configure an API key in CODEX_HOME/config.toml or CODEX_HOME/auth.json, or set STUDYHARD_IMAGE_API_KEY."
         )
     return str(base_url).rstrip("/"), str(api_key)
 
