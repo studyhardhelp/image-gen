@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""Async client for the StudyHard token-api image gateway.
+
+Uses only the Python standard library so the skill can run in Codex without
+installing dependencies.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import mimetypes
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib import error, request
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11
+    tomllib = None  # type: ignore[assignment]
+
+DEFAULT_SIZE = "1024x1024"
+DEFAULT_INTERVAL = 5
+DEFAULT_TIMEOUT = 900
+DEFAULT_IMAGE_MODEL = "gpt-image-2"
+
+def env(name: str, default: Optional[str] = None) -> Optional[str]:
+    value = os.environ.get(name)
+    return value if value not in (None, "") else default
+
+
+def codex_home() -> Path:
+    configured = env("CODEX_HOME")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".codex"
+
+
+def load_codex_config() -> Dict[str, Any]:
+    config_path = codex_home() / "config.toml"
+    if not config_path.exists() or tomllib is None:
+        return {}
+    with config_path.open("rb") as fh:
+        return tomllib.load(fh)
+
+
+def load_codex_auth() -> Dict[str, Any]:
+    auth_path = codex_home() / "auth.json"
+    if not auth_path.exists():
+        return {}
+    try:
+        return json.loads(auth_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def active_provider_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    provider_name = config.get("model_provider")
+    providers = config.get("model_providers")
+    if not isinstance(provider_name, str) or not isinstance(providers, dict):
+        return {}
+    provider = providers.get(provider_name)
+    return provider if isinstance(provider, dict) else {}
+
+
+def require_config() -> Tuple[str, str]:
+    config = load_codex_config()
+    auth = load_codex_auth()
+    provider = active_provider_config(config)
+
+    base_url = env("STUDYHARD_IMAGE_BASE_URL") or provider.get("base_url")
+    api_key = (
+        env("STUDYHARD_IMAGE_API_KEY")
+        or provider.get("experimental_bearer_token")
+        or provider.get("api_key")
+        or provider.get("openai_api_key")
+        or auth.get("OPENAI_API_KEY")
+    )
+
+    missing = []
+    if not base_url:
+        missing.append("Codex config model provider base_url")
+    if not api_key:
+        missing.append("Codex config/auth API key")
+    if missing:
+        raise SystemExit(
+            "Missing image gateway configuration: "
+            + ", ".join(missing)
+            + ". Expected CODEX_HOME/config.toml and CODEX_HOME/auth.json, or ~/.codex equivalents."
+        )
+    return str(base_url).rstrip("/"), str(api_key)
+
+
+def default_out_dir() -> Path:
+    configured = env("STUDYHARD_IMAGE_OUT_DIR")
+    if configured:
+        return Path(configured)
+    return Path(tempfile.gettempdir()) / "studyhard-images"
+
+
+def state_path(task_id: str, out_dir: Optional[Path] = None, create: bool = False) -> Path:
+    target = out_dir or default_out_dir()
+    if create:
+        target.mkdir(parents=True, exist_ok=True)
+    return target / f"{task_id}.json"
+
+
+def write_state(task_id: str, data: Dict[str, Any], out_dir: Optional[Path] = None) -> Path:
+    path = state_path(task_id, out_dir, create=True)
+    data.setdefault("task_id", task_id)
+    data["updated_at"] = int(time.time())
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def read_state(task_id: str, out_dir: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    path = state_path(task_id, out_dir, create=True)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def default_headers(api_key: str) -> Dict[str, str]:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json, text/plain, */*",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Codex/StudyHardImageGen",
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/",
+    }
+
+
+def http_json(method: str, url: str, api_key: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = None
+    headers = default_headers(api_key)
+    if body is not None:
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json;charset=utf-8"
+    req = request.Request(url, data=payload, headers=headers, method=method)
+    try:
+        with request.urlopen(req, timeout=120) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw) if raw else {}
+    except error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
+
+
+def encode_multipart(fields: Dict[str, Any], files: Dict[str, Path]) -> Tuple[bytes, str]:
+    boundary = "----studyhard-codex-" + uuid.uuid4().hex
+    chunks: List[bytes] = []
+
+    def add(value: str) -> None:
+        chunks.append(value.encode("utf-8"))
+
+    for name, value in fields.items():
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            values: Iterable[Any] = value
+        else:
+            values = (value,)
+        for item in values:
+            add(f"--{boundary}\r\n")
+            add(f'Content-Disposition: form-data; name="{name}"\r\n\r\n')
+            add(str(item))
+            add("\r\n")
+
+    for name, path in files.items():
+        content = path.read_bytes()
+        mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        add(f"--{boundary}\r\n")
+        add(f'Content-Disposition: form-data; name="{name}"; filename="{path.name}"\r\n')
+        add(f"Content-Type: {mime}\r\n\r\n")
+        chunks.append(content)
+        add("\r\n")
+
+    add(f"--{boundary}--\r\n")
+    return b"".join(chunks), boundary
+
+
+def http_multipart(url: str, api_key: str, fields: Dict[str, Any], files: Dict[str, Path]) -> Dict[str, Any]:
+    payload, boundary = encode_multipart(fields, files)
+    headers = default_headers(api_key)
+    headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    req = request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with request.urlopen(req, timeout=120) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw) if raw else {}
+    except error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {raw}") from exc
+
+
+def route_url(base_url: str, route_path: str) -> str:
+    base = base_url.rstrip("/")
+    path = route_path if route_path.startswith("/") else "/" + route_path
+    return base + path
+
+
+def model_or_default(model: Optional[str]) -> str:
+    if model:
+        return model
+    configured = env("STUDYHARD_IMAGE_MODEL")
+    if configured:
+        return configured
+    return DEFAULT_IMAGE_MODEL
+
+
+def submit_generation(args: argparse.Namespace) -> Dict[str, Any]:
+    base_url, api_key = require_config()
+    body: Dict[str, Any] = {
+        "model": model_or_default(args.model),
+        "prompt": args.prompt,
+        "size": args.size,
+        "n": args.n,
+    }
+    if args.response_format:
+        body["response_format"] = args.response_format
+    return http_json("POST", route_url(base_url, "/async/v1/images/generations"), api_key, body)
+
+
+def submit_edit(args: argparse.Namespace) -> Dict[str, Any]:
+    base_url, api_key = require_config()
+    image = Path(args.image)
+    if not image.exists():
+        raise SystemExit(f"Image file not found: {image}")
+    fields: Dict[str, Any] = {
+        "model": model_or_default(args.model),
+        "prompt": args.prompt,
+        "size": args.size,
+        "n": args.n,
+    }
+    files = {"image": image}
+    if args.mask:
+        mask = Path(args.mask)
+        if not mask.exists():
+            raise SystemExit(f"Mask file not found: {mask}")
+        files["mask"] = mask
+    return http_multipart(route_url(base_url, "/async/v1/images/edits"), api_key, fields, files)
+
+
+def submit_variation(args: argparse.Namespace) -> Dict[str, Any]:
+    base_url, api_key = require_config()
+    image = Path(args.image)
+    if not image.exists():
+        raise SystemExit(f"Image file not found: {image}")
+    fields: Dict[str, Any] = {
+        "model": model_or_default(args.model),
+        "size": args.size,
+        "n": args.n,
+    }
+    return http_multipart(route_url(base_url, "/async/v1/images/variations"), api_key, fields, {"image": image})
+
+
+def extract_urls(data: Dict[str, Any]) -> List[str]:
+    urls: List[str] = []
+    result = data.get("result")
+    if isinstance(result, dict):
+        value = result.get("result_url")
+        if isinstance(value, str):
+            urls.extend([part.strip() for part in value.split(",") if part.strip()])
+    value = data.get("result_url")
+    if isinstance(value, str):
+        urls.extend([part.strip() for part in value.split(",") if part.strip()])
+    return list(dict.fromkeys(urls))
+
+
+def query_task(task_id: str) -> Dict[str, Any]:
+    base_url, api_key = require_config()
+    return http_json("GET", route_url(base_url, f"/v1/task/{task_id}"), api_key)
+
+
+def watch_task(args: argparse.Namespace) -> Dict[str, Any]:
+    task_id = args.task_id
+    out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
+    deadline = time.time() + args.timeout if args.timeout and args.timeout > 0 else None
+    last: Dict[str, Any] = {"task_id": task_id, "task_status": "submitted"}
+
+    while True:
+        try:
+            last = query_task(task_id)
+            status = str(last.get("task_status", "unknown"))
+            urls = extract_urls(last)
+            state = dict(last)
+            state["result_urls"] = urls
+            write_state(task_id, state, out_dir)
+            if status in ("succeed", "failed"):
+                return state
+        except Exception as exc:  # keep watcher alive across transient failures
+            state = {"task_id": task_id, "task_status": "poll_error", "error": str(exc)}
+            write_state(task_id, state, out_dir)
+            last = state
+
+        if deadline is not None and time.time() >= deadline:
+            state = dict(last)
+            state["task_status"] = "timeout"
+            state["error"] = f"Timed out after {args.timeout} seconds"
+            write_state(task_id, state, out_dir)
+            return state
+        time.sleep(args.interval)
+
+
+def spawn_watcher(task_id: str, interval: int, timeout: int, out_dir: Optional[str]) -> None:
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "watch",
+        "--task-id",
+        task_id,
+        "--interval",
+        str(interval),
+        "--timeout",
+        str(timeout),
+    ]
+    if out_dir:
+        cmd.extend(["--out-dir", out_dir])
+
+    stdout = subprocess.DEVNULL
+    stderr = subprocess.DEVNULL
+    kwargs: Dict[str, Any] = {"stdout": stdout, "stderr": stderr, "stdin": subprocess.DEVNULL, "close_fds": True}
+    if os.name == "nt":
+        flags = 0
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        kwargs["creationflags"] = flags
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(cmd, **kwargs)
+
+
+def print_json(data: Dict[str, Any]) -> None:
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def zh(text: str) -> str:
+    return text.encode("utf-8").decode("unicode_escape")
+
+
+def print_status_for_codex(data: Dict[str, Any]) -> None:
+    status = data.get("task_status", "unknown")
+    task_id = data.get("task_id", "")
+    urls = data.get("result_urls") if isinstance(data.get("result_urls"), list) else extract_urls(data)
+    print(f"task_id: {task_id}")
+    print(f"task_status: {status}")
+    if status == "succeed" and urls:
+        print(zh("\\u751f\\u6210\\u5b8c\\u6210\\uff1a"))
+        for url in urls:
+            print(f"![generated image]({url})")
+    elif status in ("submitted", "processing", "poll_error", "unknown"):
+        print(zh("\\u6b63\\u5728\\u540e\\u53f0\\u751f\\u6210\\u3002\\u4f60\\u53ef\\u4ee5\\u7ee7\\u7eed\\u8ba9\\u6211\\u505a\\u5176\\u4ed6\\u4e8b\\uff1b\\u751f\\u6210\\u5b8c\\u6210\\u540e\\u6211\\u4f1a\\u5728\\u540e\\u7eed\\u6d88\\u606f\\u4e2d\\u5c55\\u793a\\u56fe\\u7247\\uff0c\\u6216\\u4f60\\u968f\\u65f6\\u95ee\\u201c\\u56fe\\u7247\\u597d\\u4e86\\u6ca1\\u201d\\u3002"))
+    elif status == "failed":
+        print(zh("\\u751f\\u6210\\u5931\\u8d25\\uff1a") + str(data.get("status_msg") or data.get("error") or "unknown error"))
+    elif status == "timeout":
+        print(zh("\\u8f6e\\u8be2\\u8d85\\u65f6\\uff1a") + str(data.get("error") or "timeout"))
+
+
+def handle_submit(args: argparse.Namespace, fn) -> None:
+    result = fn(args)
+    task_id = result.get("task_id")
+    if not task_id:
+        print_json(result)
+        raise SystemExit("Gateway did not return task_id")
+    out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
+    state = dict(result)
+    state.setdefault("task_status", "submitted")
+    state["result_urls"] = []
+    path = write_state(task_id, state, out_dir)
+    if args.watch:
+        spawn_watcher(task_id, args.interval, args.timeout, str(out_dir))
+    print_json({
+        "task_id": task_id,
+        "task_status": state.get("task_status"),
+        "state_file": str(path),
+        "watch_started": bool(args.watch),
+        "message": zh("\\u6b63\\u5728\\u540e\\u53f0\\u751f\\u6210\\u3002\\u4f60\\u53ef\\u4ee5\\u7ee7\\u7eed\\u8ba9\\u6211\\u505a\\u5176\\u4ed6\\u4e8b\\uff1b\\u751f\\u6210\\u5b8c\\u6210\\u540e\\u6211\\u4f1a\\u5728\\u540e\\u7eed\\u6d88\\u606f\\u4e2d\\u5c55\\u793a\\u56fe\\u7247\\uff0c\\u6216\\u4f60\\u968f\\u65f6\\u95ee\\u201c\\u56fe\\u7247\\u597d\\u4e86\\u6ca1\\u201d\\u3002"),
+    })
+
+
+def handle_status(args: argparse.Namespace) -> None:
+    out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
+    cached = read_state(args.task_id, out_dir)
+    if args.local and cached:
+        data = cached
+    else:
+        try:
+            remote = query_task(args.task_id)
+            remote["result_urls"] = extract_urls(remote)
+            data = remote
+            write_state(args.task_id, data, out_dir)
+        except Exception:
+            if not cached:
+                raise
+            data = cached
+    if args.markdown:
+        print_status_for_codex(data)
+    else:
+        print_json(data)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="StudyHard async image gateway client")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def add_common_submit(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--model")
+        p.add_argument("--size", default=DEFAULT_SIZE)
+        p.add_argument("--n", type=int, default=1)
+        p.add_argument("--watch", action="store_true")
+        p.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
+        p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+        p.add_argument("--out-dir")
+
+    gen = sub.add_parser("submit-generation")
+    add_common_submit(gen)
+    gen.add_argument("--prompt", required=True)
+    gen.add_argument("--response-format", choices=["url", "b64_json"])
+    gen.set_defaults(func=lambda a: handle_submit(a, submit_generation))
+
+    edit = sub.add_parser("submit-edit")
+    add_common_submit(edit)
+    edit.add_argument("--prompt", required=True)
+    edit.add_argument("--image", required=True)
+    edit.add_argument("--mask")
+    edit.set_defaults(func=lambda a: handle_submit(a, submit_edit))
+
+    variation = sub.add_parser("submit-variation")
+    add_common_submit(variation)
+    variation.set_defaults(n=4)
+    variation.add_argument("--image", required=True)
+    variation.set_defaults(func=lambda a: handle_submit(a, submit_variation))
+
+    watch = sub.add_parser("watch")
+    watch.add_argument("--task-id", required=True)
+    watch.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
+    watch.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    watch.add_argument("--out-dir")
+    watch.set_defaults(func=lambda a: print_json(watch_task(a)))
+
+    status = sub.add_parser("status")
+    status.add_argument("--task-id", required=True)
+    status.add_argument("--out-dir")
+    status.add_argument("--local", action="store_true", help="Read local state only when available")
+    status.add_argument("--markdown", action="store_true", help="Print a Codex-ready status and image Markdown")
+    status.set_defaults(func=handle_status)
+
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
