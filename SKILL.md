@@ -74,13 +74,13 @@ python3 scripts/studyhard_image_gen.py watch --task-id "<task_id>" --timeout 180
 
 ## Returning Results
 
-When `status` or `watch` reports `succeed`, render every URL as a Markdown image:
+When `status` or `watch` reports `succeed`, the script caches generated images locally under the task state directory and prints local absolute paths first. Render every local path as a Markdown image:
 
 ```markdown
-![generated image](https://example.com/image.png)
+![generated image](/absolute/path/to/generated-image.png)
 ```
 
-If `result_url` contains comma-separated URLs, split them and render each image separately. If a task is still `submitted` or `processing`, say it is still generating and include the task id.
+If local caching fails for an image, the script falls back to printing its remote URL. If `result_url` contains comma-separated URLs, split them and render each image separately. If a task is still `submitted` or `processing`, say it is still generating and include the task id.
 
 ## Defaults
 

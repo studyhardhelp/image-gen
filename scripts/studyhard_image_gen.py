@@ -11,6 +11,7 @@ import argparse
 import json
 import mimetypes
 import os
+import posixpath
 import subprocess
 import sys
 import tempfile
@@ -18,7 +19,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib import error, request
+from urllib import error, parse, request
 
 try:
     import tomllib
@@ -114,6 +115,14 @@ def default_out_dir() -> Path:
     if configured:
         return Path(configured)
     return Path(tempfile.gettempdir()) / "studyhard-images"
+
+
+def task_dir(task_id: str, out_dir: Optional[Path] = None, create: bool = False) -> Path:
+    target = out_dir or default_out_dir()
+    path = target / task_id
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def state_path(task_id: str, out_dir: Optional[Path] = None, create: bool = False) -> Path:
@@ -307,6 +316,73 @@ def extract_urls(data: Dict[str, Any]) -> List[str]:
     return list(dict.fromkeys(urls))
 
 
+def extension_from_url(url: str) -> str:
+    path = parse.urlparse(url).path
+    ext = posixpath.splitext(path)[1].lower()
+    if ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        return ext
+    return ".png"
+
+
+def extension_from_content_type(content_type: str, fallback: str) -> str:
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type == "image/jpeg":
+        return ".jpg"
+    ext = mimetypes.guess_extension(media_type)
+    if ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        return ext
+    return fallback
+
+
+def download_image(url: str, target_without_ext: Path) -> Path:
+    fallback_ext = extension_from_url(url)
+    existing = sorted(target_without_ext.parent.glob(target_without_ext.name + ".*"))
+    for path in existing:
+        if path.is_file() and path.stat().st_size > 0:
+            return path.resolve()
+
+    headers = {
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "User-Agent": default_headers("unused")["User-Agent"],
+    }
+    req = request.Request(url, headers=headers, method="GET")
+    with request.urlopen(req, timeout=120) as resp:
+        content_type = resp.headers.get("Content-Type", "")
+        ext = extension_from_content_type(content_type, fallback_ext)
+        target = target_without_ext.with_suffix(ext)
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_bytes(resp.read())
+        tmp.replace(target)
+        return target.resolve()
+
+
+def cache_result_images(data: Dict[str, Any], task_id: str, out_dir: Optional[Path] = None) -> Dict[str, Any]:
+    urls = data.get("result_urls") if isinstance(data.get("result_urls"), list) else extract_urls(data)
+    cached: List[Optional[str]] = []
+    errors: List[str] = []
+    if not urls:
+        data["result_urls"] = []
+        data["local_image_paths"] = []
+        return data
+
+    images_dir = task_dir(task_id, out_dir, create=True)
+    for index, url in enumerate(urls, start=1):
+        try:
+            path = download_image(str(url), images_dir / f"image-{index}")
+            cached.append(str(path))
+        except Exception as exc:
+            cached.append(None)
+            errors.append(f"{url}: {exc}")
+
+    data["result_urls"] = list(urls)
+    data["local_image_paths"] = cached
+    if errors:
+        data["local_image_errors"] = errors
+    else:
+        data.pop("local_image_errors", None)
+    return data
+
+
 def query_task(task_id: str) -> Dict[str, Any]:
     base_url, api_key = require_config()
     return http_json("GET", route_url(base_url, f"/v1/task/{task_id}"), api_key)
@@ -325,6 +401,8 @@ def watch_task(args: argparse.Namespace) -> Dict[str, Any]:
             urls = extract_urls(last)
             state = dict(last)
             state["result_urls"] = urls
+            if status == "succeed":
+                cache_result_images(state, task_id, out_dir)
             write_state(task_id, state, out_dir)
             if status in ("succeed", "failed"):
                 return state
@@ -385,12 +463,16 @@ def print_status_for_codex(data: Dict[str, Any]) -> None:
     status = data.get("task_status", "unknown")
     task_id = data.get("task_id", "")
     urls = data.get("result_urls") if isinstance(data.get("result_urls"), list) else extract_urls(data)
+    local_paths = data.get("local_image_paths") if isinstance(data.get("local_image_paths"), list) else []
     print(f"task_id: {task_id}")
     print(f"task_status: {status}")
-    if status == "succeed" and urls:
+    if status == "succeed" and (local_paths or urls):
         print(zh("\\u751f\\u6210\\u5b8c\\u6210\\uff1a"))
-        for url in urls:
-            print(f"![generated image]({url})")
+        for index, url in enumerate(urls):
+            path = local_paths[index] if index < len(local_paths) else None
+            print(f"![generated image]({path or url})")
+        if data.get("local_image_errors"):
+            print(zh("\\u90e8\\u5206\\u56fe\\u7247\\u672c\\u5730\\u7f13\\u5b58\\u5931\\u8d25\\uff0c\\u5df2\\u56de\\u9000\\u5230\\u8fdc\\u7a0b URL\\u3002"))
     elif status in ("submitted", "processing", "poll_error", "unknown"):
         print(zh("\\u6b63\\u5728\\u540e\\u53f0\\u751f\\u6210\\u3002\\u4f60\\u53ef\\u4ee5\\u7ee7\\u7eed\\u8ba9\\u6211\\u505a\\u5176\\u4ed6\\u4e8b\\uff1b\\u751f\\u6210\\u5b8c\\u6210\\u540e\\u6211\\u4f1a\\u5728\\u540e\\u7eed\\u6d88\\u606f\\u4e2d\\u5c55\\u793a\\u56fe\\u7247\\uff0c\\u6216\\u4f60\\u968f\\u65f6\\u95ee\\u201c\\u56fe\\u7247\\u597d\\u4e86\\u6ca1\\u201d\\u3002"))
     elif status == "failed":
@@ -430,12 +512,17 @@ def handle_status(args: argparse.Namespace) -> None:
         try:
             remote = query_task(args.task_id)
             remote["result_urls"] = extract_urls(remote)
+            if str(remote.get("task_status", "unknown")) == "succeed":
+                cache_result_images(remote, args.task_id, out_dir)
             data = remote
             write_state(args.task_id, data, out_dir)
         except Exception:
             if not cached:
                 raise
             data = cached
+    if str(data.get("task_status", "unknown")) == "succeed":
+        cache_result_images(data, args.task_id, out_dir)
+        write_state(args.task_id, data, out_dir)
     if args.markdown:
         print_status_for_codex(data)
     else:
