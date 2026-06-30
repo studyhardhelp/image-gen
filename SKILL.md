@@ -1,6 +1,6 @@
 ---
 name: studyhard-image-gen
-description: Use this skill when a user asks Codex to generate images from text, edit or modify an existing image, or create image variations / one-image-to-many-images using the StudyHard token-api OpenAI-compatible image gateway. It submits asynchronous image tasks to /api/route/async/v1/images/generations, /edits, or /variations, starts a background poller for /api/route/v1/task/{taskId}, records task state locally, and returns generated image URLs or Markdown image previews without blocking Codex while generation runs.
+description: Use this skill when a user asks Codex to generate images from text, edit or modify an existing image, or create image variations / one-image-to-many-images using the StudyHard token-api OpenAI-compatible image gateway. It submits asynchronous image tasks to /async/v1/images/generations, /edits, or /variations, starts a background poller for /v1/task/{taskId}, records task state locally, and returns generated image URLs or Markdown image previews without blocking Codex while generation runs.
 ---
 
 # StudyHard Image Gen
