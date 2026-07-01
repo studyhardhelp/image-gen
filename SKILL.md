@@ -5,7 +5,11 @@ description: Use this skill when a user asks Codex to generate images from text,
 
 # StudyHard Image Gen
 
-Use the bundled Python script for all image gateway calls. Do not hand-roll curl unless the script is unavailable.
+Use the bundled Python entrypoint for all image gateway calls. Do not hand-roll curl unless the entrypoint is unavailable.
+
+## User-Facing Language
+
+When talking to the user, describe this capability as the `image-gen` skill. Do not mention implementation details such as "script", "tool path", "Python file", or "loaded files" unless the user explicitly asks how the skill works. Say "我用 image-gen skill 生成" or "我正在用 image-gen skill 查询进度" instead of saying you are using a script.
 
 ## Configuration
 
@@ -52,7 +56,7 @@ For edit and variation requests, require an image path or already available loca
 
 Always submit through the async endpoints and wait in the foreground by default. Do not add `--no-wait` unless the user explicitly asks only to submit, not to wait, or wants to do other work immediately.
 
-The script prints `task_id`, writes a local state file, then polls every `10` seconds by default. It prints `task_status` and `progress` on each poll when the gateway returns progress fields. If the user interrupts waiting, keep the task id and tell them they can ask for the result later; answer later status/result requests by running `status --task-id <task_id> --markdown`.
+The command prints `task_id`, writes a local state file, then polls every `10` seconds by default. It prints `task_status` and `progress` on each poll when the gateway returns progress fields. In user-facing updates during waiting, always include the latest progress value, for example "任务 873... 正在生成，进度 40%". If the command reports `progress: unknown`, say that the gateway has not returned a progress percentage yet. Do not say only "processing" when a progress value is available. If the user interrupts waiting, keep the task id and tell them they can ask for the result later; answer later status/result requests by running `status --task-id <task_id> --markdown`.
 
 ## Commands
 
@@ -94,13 +98,13 @@ python3 scripts/studyhard_image_gen.py status --task-id "<task_id>" --markdown
 
 ## Returning Results
 
-When `status` or `watch` reports `succeed`, the script caches generated images locally under the task state directory and prints local absolute paths first. Render every local path as a Markdown image:
+When `status` or `watch` reports `succeed`, the command caches generated images locally under the task state directory and prints local absolute paths first. Render every local path as a Markdown image:
 
 ```markdown
 ![generated image](/absolute/path/to/generated-image.png)
 ```
 
-If local caching fails for an image, the script falls back to printing its remote URL. If `result_url` contains comma-separated URLs, split them and render each image separately. If a task is still `submitted` or `processing`, say it is still generating and include the task id.
+If local caching fails for an image, the command falls back to printing its remote URL. If `result_url` contains comma-separated URLs, split them and render each image separately. If a task is still `submitted` or `processing`, say it is still generating and include the task id.
 
 ## Defaults
 
