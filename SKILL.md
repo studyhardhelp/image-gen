@@ -1,6 +1,6 @@
 ---
 name: image-gen
-description: Use this skill when a user asks Codex to generate images from text, edit or modify an existing image, or create image variations / one-image-to-many-images using the StudyHard token-api OpenAI-compatible image gateway. It submits asynchronous image tasks to image generation, edit, and variation endpoints, starts a background poller, records task state locally, and returns generated image URLs or Markdown image previews without blocking Codex while generation runs.
+description: Use this skill when a user asks Codex to generate images from text, edit or modify an existing image, or create image variations / one-image-to-many-images using the StudyHard token-api OpenAI-compatible image gateway. It submits asynchronous image tasks to image generation, edit, and variation endpoints, waits by default with foreground polling, records task state locally, prints task progress, and returns generated image URLs or Markdown image previews.
 ---
 
 # StudyHard Image Gen
@@ -34,42 +34,62 @@ If required config is missing, explain that Codex config must contain an API key
 - Variation, one image to many images, make similar images, or image-to-image variants: run `submit-variation` with `--image`.
 - User asks whether an image is ready, asks for a result, or gives a task id: run `status`.
 
-## Non-Blocking Behavior
+## Parameter Extraction
 
-Always submit through the async endpoints and start the watcher with `--watch` unless the user explicitly asks only to submit. After submission, immediately report the `task_id` and then repeat the `message` field returned by the script exactly.
+Extract explicit user requirements into CLI arguments instead of burying them in the prompt:
 
-Do not wait for image completion in the current turn unless the user explicitly asks to wait. The background watcher keeps polling independently and writes a state JSON file.
+- Count: "one/two/four images", "生成 3 张" -> `--n <count>`. Use generation default `1` and variation default `4` when unspecified.
+- Size/aspect: map explicit resolution plus common ratio to `--size` instead of passing `aspect_ratio`. `1k`: `1:1=1024x1024`, `3:4=768x1024`, `4:3=1024x768`, `16:9=1024x576`, `9:16=576x1024`. `2k`: `1:1=2048x2048`, `3:4=1536x2048`, `4:3=2048x1536`, `16:9=2048x1152`, `9:16=1152x2048`. `4k`: `1:1=2880x2880`, `3:4=2448x3264`, `4:3=3264x2448`, `16:9=3840x2160`, `9:16=2160x3840`. If the user says only `1k`, `2k`, or `4k` without ratio, assume `1:1`. If no resolution is specified, map square or `1:1` to `1024x1024`; landscape/wide/horizontal, `3:2`, `9:6`, or `1.5:1` to `1536x1024`; portrait/vertical, `2:3`, `6:9`, or `1:1.5` to `1024x1536`. Preserve an explicit size such as `1024x1024`, `2048x2048`, `3840x2160`, or `auto`.
+- Quality: "高清", "high quality", "精细" -> `--quality high`; "快速", "低成本", "草图" -> `--quality low`; "standard/hd" -> pass the explicit value.
+- Background: "透明背景", "transparent background", "抠图/无背景" -> `--background transparent`; "不透明背景" -> `--background opaque`.
+- Output format: "PNG/JPEG/WebP" -> generation `--output-format png|jpeg|webp` when requesting generated image encoding. For OpenAI-compatible URL responses, keep `--response-format url` unless the user explicitly requests base64 JSON.
+- User field: only pass `--user` when the user explicitly provides an end-user identifier.
+- Model: use `gpt-image-2` unless the user names another available model or the gateway requires one for a specific operation.
+
+For edit and variation requests, require an image path or already available local image file. For edits, pass `--mask` only when the user provides a mask image. If a requested parameter is unsupported by the chosen operation, omit the parameter and keep the user's visual instruction in `--prompt`.
+
+## Waiting Behavior
+
+Always submit through the async endpoints and wait in the foreground by default. Do not add `--no-wait` unless the user explicitly asks only to submit, not to wait, or wants to do other work immediately.
+
+The script prints `task_id`, writes a local state file, then polls every `10` seconds by default. It prints `task_status` and `progress` on each poll when the gateway returns progress fields. If the user interrupts waiting, keep the task id and tell them they can ask for the result later; answer later status/result requests by running `status --task-id <task_id> --markdown`.
 
 ## Commands
 
 Text to image:
 
 ```bash
-python3 scripts/studyhard_image_gen.py submit-generation --prompt "<prompt>" --model "<model>" --size "1024x1024" --n 1 --watch
+python3 scripts/studyhard_image_gen.py submit-generation --prompt "<prompt>" --model "<model>" --size "1024x1024" --n 1
 ```
+
+Optional generation parameters: `--quality`, `--background`, `--output-format`, `--response-format`, `--user`.
 
 Edit image:
 
 ```bash
-python3 scripts/studyhard_image_gen.py submit-edit --image "<path>" --prompt "<prompt>" --model "<model>" --size "1024x1024" --watch
+python3 scripts/studyhard_image_gen.py submit-edit --image "<path>" --prompt "<prompt>" --model "<model>" --size "1024x1024"
 ```
+
+Optional edit parameters: `--mask`, `--quality`, `--background`, `--response-format`, `--user`.
 
 Variation:
 
 ```bash
-python3 scripts/studyhard_image_gen.py submit-variation --image "<path>" --model "<model>" --size "1024x1024" --n 4 --watch
+python3 scripts/studyhard_image_gen.py submit-variation --image "<path>" --model "<model>" --size "1024x1024" --n 4
 ```
 
-Check status:
+Optional variation parameters: `--response-format`, `--user`.
+
+Submit without waiting only when explicitly requested:
+
+```bash
+python3 scripts/studyhard_image_gen.py submit-generation --prompt "<prompt>" --no-wait
+```
+
+Check status or resume after interruption:
 
 ```bash
 python3 scripts/studyhard_image_gen.py status --task-id "<task_id>" --markdown
-```
-
-Foreground wait only when explicitly requested:
-
-```bash
-python3 scripts/studyhard_image_gen.py watch --task-id "<task_id>" --timeout 180
 ```
 
 ## Returning Results
@@ -90,5 +110,5 @@ Use these defaults unless the user says otherwise:
 - `n` for generation: `1`
 - `model`: `gpt-image-2`
 - `n` for variations: `4`
-- poll interval: `5` seconds
+- poll interval: `10` seconds
 - watcher timeout: `900` seconds

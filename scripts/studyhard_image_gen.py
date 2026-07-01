@@ -27,7 +27,7 @@ except ModuleNotFoundError:  # Python < 3.11
     tomllib = None  # type: ignore[assignment]
 
 DEFAULT_SIZE = "1024x1024"
-DEFAULT_INTERVAL = 5
+DEFAULT_INTERVAL = 10
 DEFAULT_TIMEOUT = 900
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_BASE_URL = "https://api.studyhard.help"
@@ -251,21 +251,44 @@ def model_or_default(model: Optional[str]) -> str:
     return DEFAULT_IMAGE_MODEL
 
 
+def optional_fields(args: argparse.Namespace, names: Iterable[str]) -> Dict[str, Any]:
+    fields: Dict[str, Any] = {}
+    for name in names:
+        value = getattr(args, name, None)
+        if value is not None:
+            fields[name] = value
+    return fields
+
+
+def add_optional_body_fields(target: Dict[str, Any], args: argparse.Namespace, names: Iterable[str]) -> None:
+    for name in names:
+        value = getattr(args, name, None)
+        if value is not None:
+            target[name] = value
+
+
 def submit_generation(args: argparse.Namespace) -> Dict[str, Any]:
-    base_url, api_key = require_config()
+    if args.dry_run:
+        base_url, api_key = env("STUDYHARD_IMAGE_BASE_URL", DEFAULT_BASE_URL), ""
+    else:
+        base_url, api_key = require_config()
     body: Dict[str, Any] = {
         "model": model_or_default(args.model),
         "prompt": args.prompt,
         "size": args.size,
         "n": args.n,
     }
-    if args.response_format:
-        body["response_format"] = args.response_format
+    add_optional_body_fields(body, args, ("quality", "background", "output_format", "response_format", "user"))
+    if args.dry_run:
+        return {"dry_run": True, "method": "POST", "url": route_url(base_url, "/async/v1/images/generations"), "json": body}
     return http_json("POST", route_url(base_url, "/async/v1/images/generations"), api_key, body)
 
 
 def submit_edit(args: argparse.Namespace) -> Dict[str, Any]:
-    base_url, api_key = require_config()
+    if args.dry_run:
+        base_url, api_key = env("STUDYHARD_IMAGE_BASE_URL", DEFAULT_BASE_URL), ""
+    else:
+        base_url, api_key = require_config()
     image = Path(args.image)
     if not image.exists():
         fail(f"Image file not found: {image}")
@@ -277,6 +300,7 @@ def submit_edit(args: argparse.Namespace) -> Dict[str, Any]:
         "size": args.size,
         "n": args.n,
     }
+    fields.update(optional_fields(args, ("quality", "background", "response_format", "user")))
     files = {"image": image}
     if args.mask:
         mask = Path(args.mask)
@@ -285,11 +309,22 @@ def submit_edit(args: argparse.Namespace) -> Dict[str, Any]:
         if not mask.is_file():
             fail(f"Mask path is not a file: {mask}")
         files["mask"] = mask
+    if args.dry_run:
+        return {
+            "dry_run": True,
+            "method": "POST",
+            "url": route_url(base_url, "/async/v1/images/edits"),
+            "fields": fields,
+            "files": {name: str(path) for name, path in files.items()},
+        }
     return http_multipart(route_url(base_url, "/async/v1/images/edits"), api_key, fields, files)
 
 
 def submit_variation(args: argparse.Namespace) -> Dict[str, Any]:
-    base_url, api_key = require_config()
+    if args.dry_run:
+        base_url, api_key = env("STUDYHARD_IMAGE_BASE_URL", DEFAULT_BASE_URL), ""
+    else:
+        base_url, api_key = require_config()
     image = Path(args.image)
     if not image.exists():
         fail(f"Image file not found: {image}")
@@ -300,6 +335,15 @@ def submit_variation(args: argparse.Namespace) -> Dict[str, Any]:
         "size": args.size,
         "n": args.n,
     }
+    fields.update(optional_fields(args, ("response_format", "user")))
+    if args.dry_run:
+        return {
+            "dry_run": True,
+            "method": "POST",
+            "url": route_url(base_url, "/async/v1/images/variations"),
+            "fields": fields,
+            "files": {"image": str(image)},
+        }
     return http_multipart(route_url(base_url, "/async/v1/images/variations"), api_key, fields, {"image": image})
 
 
@@ -314,6 +358,55 @@ def extract_urls(data: Dict[str, Any]) -> List[str]:
     if isinstance(value, str):
         urls.extend([part.strip() for part in value.split(",") if part.strip()])
     return list(dict.fromkeys(urls))
+
+
+def nested_value(data: Dict[str, Any], keys: Iterable[str]) -> Optional[Any]:
+    for key in keys:
+        current: Any = data
+        found = True
+        for part in key.split("."):
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                found = False
+                break
+        if found and current not in (None, ""):
+            return current
+    return None
+
+
+def extract_progress(data: Dict[str, Any]) -> Optional[int]:
+    status = str(data.get("task_status", "")).lower()
+    if status == "succeed":
+        return 100
+    value = nested_value(data, (
+        "progress",
+        "task_progress",
+        "percentage",
+        "percent",
+        "result.progress",
+        "result.task_progress",
+        "result.percentage",
+        "result.percent",
+        "output.progress",
+        "output.task_progress",
+        "output.percentage",
+        "output.percent",
+    ))
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            value = value.strip().rstrip("%")
+        progress = int(float(value))
+        return max(0, min(progress, 100))
+    except (TypeError, ValueError):
+        return None
+
+
+def format_progress(data: Dict[str, Any]) -> str:
+    progress = extract_progress(data)
+    return "unknown" if progress is None else f"{progress}%"
 
 
 def extension_from_url(url: str) -> str:
@@ -401,15 +494,20 @@ def watch_task(args: argparse.Namespace) -> Dict[str, Any]:
             urls = extract_urls(last)
             state = dict(last)
             state["result_urls"] = urls
+            state["progress"] = extract_progress(state)
             if status == "succeed":
                 cache_result_images(state, task_id, out_dir)
             write_state(task_id, state, out_dir)
+            if getattr(args, "progress", False):
+                print(f"task_id: {task_id} task_status: {status} progress: {format_progress(state)}", flush=True)
             if status in ("succeed", "failed"):
                 return state
         except Exception as exc:  # keep watcher alive across transient failures
             state = {"task_id": task_id, "task_status": "poll_error", "error": str(exc)}
             write_state(task_id, state, out_dir)
             last = state
+            if getattr(args, "progress", False):
+                print(f"task_id: {task_id} task_status: poll_error progress: unknown error: {exc}", flush=True)
 
         if deadline is not None and time.time() >= deadline:
             state = dict(last)
@@ -466,6 +564,7 @@ def print_status_for_codex(data: Dict[str, Any]) -> None:
     local_paths = data.get("local_image_paths") if isinstance(data.get("local_image_paths"), list) else []
     print(f"task_id: {task_id}")
     print(f"task_status: {status}")
+    print(f"progress: {format_progress(data)}")
     if status == "succeed" and (local_paths or urls):
         print(zh("\\u751f\\u6210\\u5b8c\\u6210\\uff1a"))
         for index, url in enumerate(urls):
@@ -483,6 +582,9 @@ def print_status_for_codex(data: Dict[str, Any]) -> None:
 
 def handle_submit(args: argparse.Namespace, fn) -> None:
     result = fn(args)
+    if result.get("dry_run"):
+        print_json(result)
+        return
     task_id = result.get("task_id")
     if not task_id:
         print_json(result)
@@ -492,16 +594,36 @@ def handle_submit(args: argparse.Namespace, fn) -> None:
     state.setdefault("task_status", "submitted")
     state["result_urls"] = []
     path = write_state(task_id, state, out_dir)
-    if args.watch:
-        spawn_watcher(task_id, args.interval, args.timeout, str(out_dir))
+    if args.no_wait:
+        if args.watch:
+            spawn_watcher(task_id, args.interval, args.timeout, str(out_dir))
+        print_json({
+            "task_id": task_id,
+            "task_status": state.get("task_status"),
+            "state_file": str(path),
+            "watch_started": bool(args.watch),
+            "message": zh("\\u4efb\\u52a1\\u5df2\\u63d0\\u4ea4\\u3002\\u4f60\\u53ef\\u4ee5\\u7a0d\\u540e\\u7528 status \\u67e5\\u8be2\\u7ed3\\u679c\\u3002"),
+        })
+        return
+
     print_json({
         "task_id": task_id,
         "task_status": state.get("task_status"),
         "state_file": str(path),
-        "watch_started": bool(args.watch),
-        "message": zh("\\u6b63\\u5728\\u540e\\u53f0\\u751f\\u6210\\u3002\\u4f60\\u53ef\\u4ee5\\u7ee7\\u7eed\\u8ba9\\u6211\\u505a\\u5176\\u4ed6\\u4e8b\\uff1b\\u751f\\u6210\\u5b8c\\u6210\\u540e\\u6211\\u4f1a\\u5728\\u540e\\u7eed\\u6d88\\u606f\\u4e2d\\u5c55\\u793a\\u56fe\\u7247\\uff0c\\u6216\\u4f60\\u968f\\u65f6\\u95ee\\u201c\\u56fe\\u7247\\u597d\\u4e86\\u6ca1\\u201d\\u3002"),
+        "message": zh("\\u4efb\\u52a1\\u5df2\\u63d0\\u4ea4\\uff0c\\u5f00\\u59cb\\u524d\\u53f0\\u8f6e\\u8be2\\u3002\\u5982\\u679c\\u4f60\\u7ec8\\u6b62\\u7b49\\u5f85\\uff0c\\u540e\\u7eed\\u53ef\\u4ee5\\u7528 task_id \\u7ee7\\u7eed\\u67e5\\u8be2\\u3002"),
     })
-
+    watch_args = argparse.Namespace(
+        task_id=task_id,
+        interval=args.interval,
+        timeout=args.timeout,
+        out_dir=str(out_dir),
+        progress=True,
+    )
+    final_state = watch_task(watch_args)
+    if str(final_state.get("task_status", "unknown")) == "succeed":
+        print_status_for_codex(final_state)
+    else:
+        print_json(final_state)
 
 def handle_status(args: argparse.Namespace) -> None:
     out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
@@ -512,6 +634,7 @@ def handle_status(args: argparse.Namespace) -> None:
         try:
             remote = query_task(args.task_id)
             remote["result_urls"] = extract_urls(remote)
+            remote["progress"] = extract_progress(remote)
             if str(remote.get("task_status", "unknown")) == "succeed":
                 cache_result_images(remote, args.task_id, out_dir)
             data = remote
@@ -537,7 +660,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--model")
         p.add_argument("--size", default=DEFAULT_SIZE)
         p.add_argument("--n", type=int, default=1)
-        p.add_argument("--watch", action="store_true")
+        p.add_argument("--response-format", choices=["url", "b64_json"])
+        p.add_argument("--user")
+        p.add_argument("--dry-run", action="store_true", help="Print the gateway request without submitting")
+        p.add_argument("--no-wait", action="store_true", help="Submit the task and return immediately")
+        p.add_argument("--watch", action="store_true", help="With --no-wait, start a detached background watcher")
         p.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
         p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
         p.add_argument("--out-dir")
@@ -545,7 +672,9 @@ def build_parser() -> argparse.ArgumentParser:
     gen = sub.add_parser("submit-generation")
     add_common_submit(gen)
     gen.add_argument("--prompt", required=True)
-    gen.add_argument("--response-format", choices=["url", "b64_json"])
+    gen.add_argument("--quality", choices=["auto", "low", "medium", "high", "standard", "hd"])
+    gen.add_argument("--background", choices=["auto", "transparent", "opaque"])
+    gen.add_argument("--output-format", choices=["png", "jpeg", "webp"])
     gen.set_defaults(func=lambda a: handle_submit(a, submit_generation))
 
     edit = sub.add_parser("submit-edit")
@@ -553,6 +682,8 @@ def build_parser() -> argparse.ArgumentParser:
     edit.add_argument("--prompt", required=True)
     edit.add_argument("--image", required=True)
     edit.add_argument("--mask")
+    edit.add_argument("--quality", choices=["auto", "low", "medium", "high", "standard", "hd"])
+    edit.add_argument("--background", choices=["auto", "transparent", "opaque"])
     edit.set_defaults(func=lambda a: handle_submit(a, submit_edit))
 
     variation = sub.add_parser("submit-variation")
@@ -566,6 +697,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
     watch.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     watch.add_argument("--out-dir")
+    watch.add_argument("--progress", action="store_true", help="Print progress on every poll")
     watch.set_defaults(func=lambda a: print_json(watch_task(a)))
 
     status = sub.add_parser("status")
