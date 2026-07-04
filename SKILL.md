@@ -43,7 +43,7 @@ If required config is missing, explain that Codex config must contain an API key
 Extract explicit user requirements into CLI arguments instead of burying them in the prompt:
 
 - Count: "one/two/four images", "生成 3 张" -> `--n <count>`. Use generation default `1` and variation default `4` when unspecified.
-- Size/aspect: map explicit resolution plus common ratio to `--size` instead of passing `aspect_ratio`. `1k`: `1:1=1024x1024`, `3:4=768x1024`, `4:3=1024x768`, `16:9=1024x576`, `9:16=576x1024`. `2k`: `1:1=2048x2048`, `3:4=1536x2048`, `4:3=2048x1536`, `16:9=2048x1152`, `9:16=1152x2048`. `4k`: `1:1=2880x2880`, `3:4=2448x3264`, `4:3=3264x2448`, `16:9=3840x2160`, `9:16=2160x3840`. If the user says only `1k`, `2k`, or `4k` without ratio, assume `1:1`. If no resolution is specified, map square or `1:1` to `1024x1024`; landscape/wide/horizontal, `3:2`, `9:6`, or `1.5:1` to `1536x1024`; portrait/vertical, `2:3`, `6:9`, or `1:1.5` to `1024x1536`. Preserve an explicit size such as `1024x1024`, `2048x2048`, `3840x2160`, or `auto`.
+- Size/aspect for generation: when the user gives `1k`, `2k`, or `4k`, pass `--resolution 1k|2k|4k` plus `--ratio`. Supported ratios are `1:1`, `3:4`, `4:3`, `16:9`, and `9:16`; if the user gives only a resolution, assume `--ratio 1:1`. The gateway maps these to OpenAI sizes: `1k`: `1:1=1024x1024`, `3:4=768x1024`, `4:3=1024x768`, `16:9=1024x576`, `9:16=576x1024`; `2k`: `1:1=2048x2048`, `3:4=1536x2048`, `4:3=2048x1536`, `16:9=2048x1152`, `9:16=1152x2048`; `4k`: `1:1=2880x2880`, `3:4=2448x3264`, `4:3=3264x2448`, `16:9=3840x2160`, `9:16=2160x3840`. If no resolution is specified, use `--size` for explicit pixel sizes or `auto`; map square/`1:1` to `1024x1024`, landscape/wide/horizontal or `9:6`/`3:2` to `1536x1024`, and portrait/vertical or `6:9`/`2:3` to `1024x1536`.
 - Quality: "高清", "high quality", "精细" -> `--quality high`; "快速", "低成本", "草图" -> `--quality low`; "standard/hd" -> pass the explicit value.
 - Background: "透明背景", "transparent background", "抠图/无背景" -> `--background transparent`; "不透明背景" -> `--background opaque`.
 - Output format: "PNG/JPEG/WebP" -> generation `--output-format png|jpeg|webp` when requesting generated image encoding. For OpenAI-compatible URL responses, keep `--response-format url` unless the user explicitly requests base64 JSON.
@@ -63,10 +63,10 @@ The command prints `task_id`, writes a local state file, then polls every `10` s
 Text to image:
 
 ```bash
-python3 scripts/studyhard_image_gen.py submit-generation --prompt "<prompt>" --model "<model>" --size "1024x1024" --n 1
+python3 scripts/studyhard_image_gen.py submit-generation --prompt "<prompt>" --model "<model>" --resolution "1k" --ratio "1:1" --n 1
 ```
 
-Optional generation parameters: `--quality`, `--background`, `--output-format`, `--response-format`, `--user`.
+Optional generation parameters: `--resolution`, `--ratio`, `--size`, `--quality`, `--background`, `--output-format`, `--response-format`, `--user`.
 
 Edit image:
 

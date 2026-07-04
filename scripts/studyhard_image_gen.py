@@ -275,9 +275,13 @@ def submit_generation(args: argparse.Namespace) -> Dict[str, Any]:
     body: Dict[str, Any] = {
         "model": model_or_default(args.model),
         "prompt": args.prompt,
-        "size": args.size,
         "n": args.n,
     }
+    if args.resolution or args.ratio:
+        body["resolution"] = args.resolution or "1k"
+        body["ratio"] = args.ratio or "1:1"
+    else:
+        body["size"] = args.size
     add_optional_body_fields(body, args, ("quality", "background", "output_format", "response_format", "user"))
     if args.dry_run:
         return {"dry_run": True, "method": "POST", "url": route_url(base_url, "/async/v1/images/generations"), "json": body}
@@ -672,6 +676,8 @@ def build_parser() -> argparse.ArgumentParser:
     gen = sub.add_parser("submit-generation")
     add_common_submit(gen)
     gen.add_argument("--prompt", required=True)
+    gen.add_argument("--resolution", choices=["1k", "2k", "4k"])
+    gen.add_argument("--ratio", choices=["1:1", "3:4", "4:3", "16:9", "9:16"])
     gen.add_argument("--quality", choices=["auto", "low", "medium", "high", "standard", "hd"])
     gen.add_argument("--background", choices=["auto", "transparent", "opaque"])
     gen.add_argument("--output-format", choices=["png", "jpeg", "webp"])
