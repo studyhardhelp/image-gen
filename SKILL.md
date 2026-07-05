@@ -42,7 +42,7 @@ If required config is missing, explain that Codex config must contain an API key
 
 Extract explicit user requirements into CLI arguments instead of burying them in the prompt:
 
-- Count: extract Arabic and Chinese counts into `--n <count>`. Examples: "生成 3 张" -> `--n 3`; "三张/3张/三幅/三个版本" -> `--n 3`; "一张/一幅/一个版本" -> `--n 1`; "两张/二张/两幅/两个版本" -> `--n 2`; "四张/四幅/四个版本" -> `--n 4`. Use generation default `1` and variation default `4` only when the user does not specify a count.
+- Count: extract Arabic and Chinese counts into `--n <count>`. Examples: "生成 3 张" -> `--n 3`; "三张/3张/三幅/三个版本" -> `--n 3`; "一张/一幅/一个版本" -> `--n 1`; "两张/二张/两幅/两个版本" -> `--n 2`; "四张/四幅/四个版本" -> `--n 4`. Use generation default `1` and variation default `4` only when the user does not specify a count. For text-to-image generation, `--n` means how many separate image tasks the skill should submit; when `--n > 1`, the entrypoint submits that many generation requests, each with gateway JSON `"n": 1`, and polls all returned task ids together. Do not rely on one gateway generation request with `"n" > 1`.
 - Size/aspect for generation: when the user gives `1k`, `2k`, or `4k`, pass `--resolution 1k|2k|4k` plus `--ratio`. Supported ratios are `1:1`, `3:4`, `4:3`, `16:9`, and `9:16`; if the user gives only a resolution, assume `--ratio 1:1`. The gateway maps these to OpenAI sizes: `1k`: `1:1=1024x1024`, `3:4=768x1024`, `4:3=1024x768`, `16:9=1024x576`, `9:16=576x1024`; `2k`: `1:1=2048x2048`, `3:4=1536x2048`, `4:3=2048x1536`, `16:9=2048x1152`, `9:16=1152x2048`; `4k`: `1:1=2880x2880`, `3:4=2448x3264`, `4:3=3264x2448`, `16:9=3840x2160`, `9:16=2160x3840`. If no resolution is specified, use `--size` for explicit pixel sizes or `auto`; map square/`1:1` to `1024x1024`, landscape/wide/horizontal or `9:6`/`3:2` to `1536x1024`, and portrait/vertical or `6:9`/`2:3` to `1024x1536`.
 - Quality: "高清", "high quality", "精细" -> `--quality high`; "快速", "低成本", "草图" -> `--quality low`; "standard/hd" -> pass the explicit value.
 - Background: "透明背景", "transparent background", "抠图/无背景" -> `--background transparent`; "不透明背景" -> `--background opaque`.
@@ -56,7 +56,7 @@ For edit and variation requests, require an image path or already available loca
 
 Always submit through the async endpoints and wait in the foreground by default. Do not add `--no-wait` unless the user explicitly asks only to submit, not to wait, or wants to do other work immediately.
 
-The command prints `task_id`, writes a local state file, then polls every `10` seconds by default. It prints `task_status` and `progress` on each poll when the gateway returns progress fields. In user-facing updates during waiting, always include the latest progress value, for example "任务 873... 正在生成，进度 40%". If the command reports `progress: unknown`, say that the gateway has not returned a progress percentage yet. Do not say only "processing" when a progress value is available. If the user interrupts waiting, keep the task id and tell them they can ask for the result later; answer later status/result requests by running `status --task-id <task_id> --markdown`.
+The command prints `task_id` for a single-image request, or `batch_id` plus all `task_ids` for a multi-image generation request. It writes local state files, then polls every `10` seconds by default. It prints `task_status` and `progress` on each poll when the gateway returns progress fields. For multi-image generation, each poll prints progress for every task id. In user-facing updates during waiting, always include the latest progress value, for example "任务 873... 正在生成，进度 40%". If the command reports `progress: unknown`, say that the gateway has not returned a progress percentage yet. Do not say only "processing" when a progress value is available. If the user interrupts waiting, keep the task id or batch id and tell them they can ask for the result later; answer later status/result requests by running `status --task-id <task_id> --markdown` or `status --batch-id <batch_id> --markdown`.
 
 ## Commands
 
@@ -94,6 +94,12 @@ Check status or resume after interruption:
 
 ```bash
 python3 scripts/studyhard_image_gen.py status --task-id "<task_id>" --markdown
+```
+
+Check a multi-image generation batch:
+
+```bash
+python3 scripts/studyhard_image_gen.py status --batch-id "<batch_id>" --markdown
 ```
 
 ## Returning Results

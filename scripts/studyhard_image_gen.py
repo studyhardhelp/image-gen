@@ -31,6 +31,7 @@ DEFAULT_INTERVAL = 10
 DEFAULT_TIMEOUT = 900
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_BASE_URL = "https://api.studyhard.help"
+TERMINAL_STATUSES = {"succeed", "failed", "timeout"}
 
 
 class UserFacingError(Exception):
@@ -132,6 +133,13 @@ def state_path(task_id: str, out_dir: Optional[Path] = None, create: bool = Fals
     return target / f"{task_id}.json"
 
 
+def batch_state_path(batch_id: str, out_dir: Optional[Path] = None, create: bool = False) -> Path:
+    target = out_dir or default_out_dir()
+    if create:
+        target.mkdir(parents=True, exist_ok=True)
+    return target / f"batch-{batch_id}.json"
+
+
 def write_state(task_id: str, data: Dict[str, Any], out_dir: Optional[Path] = None) -> Path:
     path = state_path(task_id, out_dir, create=True)
     data.setdefault("task_id", task_id)
@@ -144,6 +152,23 @@ def write_state(task_id: str, data: Dict[str, Any], out_dir: Optional[Path] = No
 
 def read_state(task_id: str, out_dir: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     path = state_path(task_id, out_dir, create=True)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_batch_state(batch_id: str, data: Dict[str, Any], out_dir: Optional[Path] = None) -> Path:
+    path = batch_state_path(batch_id, out_dir, create=True)
+    data.setdefault("batch_id", batch_id)
+    data["updated_at"] = int(time.time())
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def read_batch_state(batch_id: str, out_dir: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    path = batch_state_path(batch_id, out_dir, create=True)
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
@@ -267,15 +292,11 @@ def add_optional_body_fields(target: Dict[str, Any], args: argparse.Namespace, n
             target[name] = value
 
 
-def submit_generation(args: argparse.Namespace) -> Dict[str, Any]:
-    if args.dry_run:
-        base_url, api_key = env("STUDYHARD_IMAGE_BASE_URL", DEFAULT_BASE_URL), ""
-    else:
-        base_url, api_key = require_config()
+def build_generation_body(args: argparse.Namespace, count: int = 1) -> Dict[str, Any]:
     body: Dict[str, Any] = {
         "model": model_or_default(args.model),
         "prompt": args.prompt,
-        "n": args.n,
+        "n": count,
     }
     if args.resolution or args.ratio:
         body["resolution"] = args.resolution or "1k"
@@ -283,9 +304,57 @@ def submit_generation(args: argparse.Namespace) -> Dict[str, Any]:
     else:
         body["size"] = args.size
     add_optional_body_fields(body, args, ("quality", "background", "output_format", "response_format", "user"))
+    return body
+
+
+def submit_generation(args: argparse.Namespace) -> Dict[str, Any]:
+    if args.n < 1:
+        fail("--n must be 1 or greater.")
     if args.dry_run:
-        return {"dry_run": True, "method": "POST", "url": route_url(base_url, "/async/v1/images/generations"), "json": body}
-    return http_json("POST", route_url(base_url, "/async/v1/images/generations"), api_key, body)
+        base_url, api_key = env("STUDYHARD_IMAGE_BASE_URL", DEFAULT_BASE_URL), ""
+    else:
+        base_url, api_key = require_config()
+    url = route_url(base_url, "/async/v1/images/generations")
+    if args.dry_run:
+        if args.n == 1:
+            return {"dry_run": True, "method": "POST", "url": url, "json": build_generation_body(args, 1)}
+        return {
+            "dry_run": True,
+            "batch": True,
+            "requested_n": args.n,
+            "requests": [
+                {"index": index, "method": "POST", "url": url, "json": build_generation_body(args, 1)}
+                for index in range(1, args.n + 1)
+            ],
+        }
+    if args.n == 1:
+        return http_json("POST", url, api_key, build_generation_body(args, 1))
+
+    results: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    task_ids: List[str] = []
+    for index in range(1, args.n + 1):
+        try:
+            result = http_json("POST", url, api_key, build_generation_body(args, 1))
+            results.append({"index": index, **result})
+            task_id = result.get("task_id")
+            if task_id:
+                task_ids.append(str(task_id))
+            else:
+                errors.append({"index": index, "error": "Image gateway did not return task_id.", "response": result})
+        except UserFacingError as exc:
+            errors.append({"index": index, "error": str(exc)})
+    if not task_ids:
+        return {"batch": True, "requested_n": args.n, "tasks": results, "submit_errors": errors}
+    return {
+        "batch": True,
+        "batch_id": uuid.uuid4().hex,
+        "requested_n": args.n,
+        "task_ids": task_ids,
+        "task_status": "submitted",
+        "tasks": results,
+        "submit_errors": errors,
+    }
 
 
 def submit_edit(args: argparse.Namespace) -> Dict[str, Any]:
@@ -522,6 +591,119 @@ def watch_task(args: argparse.Namespace) -> Dict[str, Any]:
         time.sleep(args.interval)
 
 
+def batch_status(states: Iterable[Dict[str, Any]]) -> str:
+    statuses = [str(state.get("task_status", "unknown")) for state in states]
+    if statuses and all(status == "succeed" for status in statuses):
+        return "succeed"
+    if statuses and all(status in TERMINAL_STATUSES for status in statuses):
+        return "failed" if all(status == "failed" for status in statuses) else "partial_failed"
+    if any(status == "poll_error" for status in statuses):
+        return "poll_error"
+    return "processing"
+
+
+def batch_progress(states: Iterable[Dict[str, Any]]) -> Optional[int]:
+    values: List[int] = []
+    for state in states:
+        progress = extract_progress(state)
+        if progress is not None:
+            values.append(progress)
+    if not values:
+        return None
+    return int(sum(values) / len(values))
+
+
+def write_current_batch_state(
+    batch_id: str,
+    task_ids: List[str],
+    states: Dict[str, Dict[str, Any]],
+    out_dir: Path,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Path:
+    ordered_states = [states.get(task_id, {"task_id": task_id, "task_status": "submitted"}) for task_id in task_ids]
+    data: Dict[str, Any] = {
+        "batch_id": batch_id,
+        "task_ids": task_ids,
+        "task_status": batch_status(ordered_states),
+        "progress": batch_progress(ordered_states),
+        "tasks": ordered_states,
+    }
+    if extra:
+        data.update(extra)
+    return write_batch_state(batch_id, data, out_dir)
+
+
+def watch_tasks(args: argparse.Namespace) -> Dict[str, Any]:
+    task_ids = [str(task_id) for task_id in args.task_ids]
+    batch_id = args.batch_id
+    out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
+    deadline = time.time() + args.timeout if args.timeout and args.timeout > 0 else None
+    states: Dict[str, Dict[str, Any]] = {
+        task_id: read_state(task_id, out_dir) or {"task_id": task_id, "task_status": "submitted"}
+        for task_id in task_ids
+    }
+
+    while True:
+        for task_id in task_ids:
+            current_status = str(states.get(task_id, {}).get("task_status", "submitted"))
+            if current_status in TERMINAL_STATUSES:
+                if getattr(args, "progress", False):
+                    print(f"task_id: {task_id} task_status: {current_status} progress: {format_progress(states[task_id])}", flush=True)
+                continue
+            try:
+                remote = query_task(task_id)
+                status = str(remote.get("task_status", "unknown"))
+                state = dict(remote)
+                state["task_id"] = task_id
+                state["result_urls"] = extract_urls(state)
+                state["progress"] = extract_progress(state)
+                if status == "succeed":
+                    cache_result_images(state, task_id, out_dir)
+                write_state(task_id, state, out_dir)
+                states[task_id] = state
+                if getattr(args, "progress", False):
+                    print(f"task_id: {task_id} task_status: {status} progress: {format_progress(state)}", flush=True)
+            except Exception as exc:  # keep watcher alive across transient failures
+                state = {"task_id": task_id, "task_status": "poll_error", "error": str(exc)}
+                write_state(task_id, state, out_dir)
+                states[task_id] = state
+                if getattr(args, "progress", False):
+                    print(f"task_id: {task_id} task_status: poll_error progress: unknown error: {exc}", flush=True)
+
+        write_current_batch_state(batch_id, task_ids, states, out_dir)
+        ordered_states = [states[task_id] for task_id in task_ids]
+        if all(str(state.get("task_status", "unknown")) in TERMINAL_STATUSES for state in ordered_states):
+            final_state = {
+                "batch_id": batch_id,
+                "task_ids": task_ids,
+                "task_status": batch_status(ordered_states),
+                "progress": batch_progress(ordered_states),
+                "tasks": ordered_states,
+            }
+            write_batch_state(batch_id, final_state, out_dir)
+            return final_state
+
+        if deadline is not None and time.time() >= deadline:
+            for task_id in task_ids:
+                state = states[task_id]
+                if str(state.get("task_status", "unknown")) not in TERMINAL_STATUSES:
+                    timeout_state = dict(state)
+                    timeout_state["task_status"] = "timeout"
+                    timeout_state["error"] = f"Timed out after {args.timeout} seconds"
+                    write_state(task_id, timeout_state, out_dir)
+                    states[task_id] = timeout_state
+            final_state = {
+                "batch_id": batch_id,
+                "task_ids": task_ids,
+                "task_status": batch_status(states.values()),
+                "progress": batch_progress(states.values()),
+                "tasks": [states[task_id] for task_id in task_ids],
+            }
+            write_batch_state(batch_id, final_state, out_dir)
+            return final_state
+        time.sleep(args.interval)
+
+
 def spawn_watcher(task_id: str, interval: int, timeout: int, out_dir: Optional[str]) -> None:
     cmd = [
         sys.executable,
@@ -584,10 +766,110 @@ def print_status_for_codex(data: Dict[str, Any]) -> None:
         print(zh("\\u8f6e\\u8be2\\u8d85\\u65f6\\uff1a") + str(data.get("error") or "timeout"))
 
 
+def print_batch_status_for_codex(data: Dict[str, Any]) -> None:
+    if data.get("batch_id"):
+        print(f"batch_id: {data.get('batch_id', '')}")
+    print(f"task_status: {data.get('task_status', 'unknown')}")
+    print(f"progress: {format_progress(data)}")
+    tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
+    for task in tasks:
+        print(f"task_id: {task.get('task_id', '')} task_status: {task.get('task_status', 'unknown')} progress: {format_progress(task)}")
+    if data.get("task_status") in ("succeed", "partial_failed"):
+        printed = False
+        for task in tasks:
+            if str(task.get("task_status", "unknown")) != "succeed":
+                continue
+            urls = task.get("result_urls") if isinstance(task.get("result_urls"), list) else extract_urls(task)
+            local_paths = task.get("local_image_paths") if isinstance(task.get("local_image_paths"), list) else []
+            for index, url in enumerate(urls):
+                path = local_paths[index] if index < len(local_paths) else None
+                if not printed:
+                    print(zh("\\u751f\\u6210\\u5b8c\\u6210\\uff1a"))
+                    printed = True
+                print(f"![generated image]({path or url})")
+        if not printed:
+            print(zh("\\u6ca1\\u6709\\u53ef\\u5c55\\u793a\\u7684\\u56fe\\u7247\\u7ed3\\u679c\\u3002"))
+    elif data.get("task_status") in ("submitted", "processing", "poll_error", "unknown"):
+        if data.get("batch_id"):
+            print(zh("\\u6b63\\u5728\\u751f\\u6210\\u3002\\u4f60\\u53ef\\u4ee5\\u7a0d\\u540e\\u7528 batch_id \\u6216 task_id \\u7ee7\\u7eed\\u67e5\\u8be2\\u3002"))
+        else:
+            print(zh("\\u6b63\\u5728\\u751f\\u6210\\u3002\\u4f60\\u53ef\\u4ee5\\u7a0d\\u540e\\u7528 task_id \\u7ee7\\u7eed\\u67e5\\u8be2\\u3002"))
+    elif data.get("task_status") in ("failed", "timeout"):
+        print(zh("\\u751f\\u6210\\u672a\\u5b8c\\u6210\\uff0c\\u8bf7\\u67e5\\u770b\\u4e0a\\u65b9 task \\u72b6\\u6001\\u3002"))
+
+
+def handle_batch_submit(args: argparse.Namespace, result: Dict[str, Any]) -> None:
+    task_ids = [str(task_id) for task_id in result.get("task_ids", []) if task_id]
+    if not task_ids:
+        print_json(result)
+        fail("Image gateway did not return any task_id. The raw response was printed above.")
+    batch_id = str(result.get("batch_id") or uuid.uuid4().hex)
+    out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
+    states: Dict[str, Dict[str, Any]] = {}
+    by_task_id = {
+        str(task.get("task_id")): task
+        for task in result.get("tasks", [])
+        if isinstance(task, dict) and task.get("task_id")
+    }
+    for task_id in task_ids:
+        state = dict(by_task_id.get(task_id, {}))
+        state.setdefault("task_id", task_id)
+        state.setdefault("task_status", "submitted")
+        state["result_urls"] = []
+        write_state(task_id, state, out_dir)
+        states[task_id] = state
+    batch_path = write_current_batch_state(
+        batch_id,
+        task_ids,
+        states,
+        out_dir,
+        {"requested_n": result.get("requested_n"), "submit_errors": result.get("submit_errors", [])},
+    )
+    if args.no_wait:
+        if args.watch:
+            for task_id in task_ids:
+                spawn_watcher(task_id, args.interval, args.timeout, str(out_dir))
+        print_json({
+            "batch_id": batch_id,
+            "task_ids": task_ids,
+            "task_status": "submitted",
+            "batch_state_file": str(batch_path),
+            "watch_started": bool(args.watch),
+            "submit_errors": result.get("submit_errors", []),
+            "message": zh("\\u591a\\u56fe\\u4efb\\u52a1\\u5df2\\u62c6\\u5206\\u63d0\\u4ea4\\u3002\\u4f60\\u53ef\\u4ee5\\u7a0d\\u540e\\u7528 batch_id \\u6216 task_id \\u67e5\\u8be2\\u7ed3\\u679c\\u3002"),
+        })
+        return
+
+    print_json({
+        "batch_id": batch_id,
+        "task_ids": task_ids,
+        "task_status": "submitted",
+        "batch_state_file": str(batch_path),
+        "submit_errors": result.get("submit_errors", []),
+        "message": zh("\\u591a\\u56fe\\u4efb\\u52a1\\u5df2\\u62c6\\u5206\\u63d0\\u4ea4\\uff0c\\u5f00\\u59cb\\u524d\\u53f0\\u8f6e\\u8be2\\u6240\\u6709 task_id\\u3002"),
+    })
+    watch_args = argparse.Namespace(
+        batch_id=batch_id,
+        task_ids=task_ids,
+        interval=args.interval,
+        timeout=args.timeout,
+        out_dir=str(out_dir),
+        progress=True,
+    )
+    final_state = watch_tasks(watch_args)
+    if str(final_state.get("task_status", "unknown")) in ("succeed", "partial_failed"):
+        print_batch_status_for_codex(final_state)
+    else:
+        print_json(final_state)
+
+
 def handle_submit(args: argparse.Namespace, fn) -> None:
     result = fn(args)
     if result.get("dry_run"):
         print_json(result)
+        return
+    if result.get("batch"):
+        handle_batch_submit(args, result)
         return
     task_id = result.get("task_id")
     if not task_id:
@@ -629,27 +911,71 @@ def handle_submit(args: argparse.Namespace, fn) -> None:
     else:
         print_json(final_state)
 
-def handle_status(args: argparse.Namespace) -> None:
-    out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
-    cached = read_state(args.task_id, out_dir)
-    if args.local and cached:
+def load_or_query_task_status(task_id: str, out_dir: Path, local: bool) -> Dict[str, Any]:
+    cached = read_state(task_id, out_dir)
+    if local and cached:
         data = cached
     else:
         try:
-            remote = query_task(args.task_id)
+            remote = query_task(task_id)
+            remote["task_id"] = task_id
             remote["result_urls"] = extract_urls(remote)
             remote["progress"] = extract_progress(remote)
             if str(remote.get("task_status", "unknown")) == "succeed":
-                cache_result_images(remote, args.task_id, out_dir)
+                cache_result_images(remote, task_id, out_dir)
             data = remote
-            write_state(args.task_id, data, out_dir)
+            write_state(task_id, data, out_dir)
         except Exception:
             if not cached:
                 raise
             data = cached
     if str(data.get("task_status", "unknown")) == "succeed":
-        cache_result_images(data, args.task_id, out_dir)
-        write_state(args.task_id, data, out_dir)
+        cache_result_images(data, task_id, out_dir)
+        write_state(task_id, data, out_dir)
+    return data
+
+
+def handle_status(args: argparse.Namespace) -> None:
+    out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
+    if args.batch_id:
+        batch = read_batch_state(args.batch_id, out_dir)
+        if not batch:
+            fail(f"Batch state not found: {args.batch_id}")
+        task_ids = [str(task_id) for task_id in batch.get("task_ids", []) if task_id]
+        states = {task_id: load_or_query_task_status(task_id, out_dir, args.local) for task_id in task_ids}
+        data = {
+            "batch_id": args.batch_id,
+            "task_ids": task_ids,
+            "task_status": batch_status(states.values()),
+            "progress": batch_progress(states.values()),
+            "tasks": [states[task_id] for task_id in task_ids],
+        }
+        write_batch_state(args.batch_id, data, out_dir)
+        if args.markdown:
+            print_batch_status_for_codex(data)
+        else:
+            print_json(data)
+        return
+
+    task_ids = [str(task_id) for task_id in (args.task_id or [])]
+    if not task_ids:
+        fail("Provide --task-id or --batch-id.")
+    if len(task_ids) > 1:
+        states = {task_id: load_or_query_task_status(task_id, out_dir, args.local) for task_id in task_ids}
+        data = {
+            "batch_id": "",
+            "task_ids": task_ids,
+            "task_status": batch_status(states.values()),
+            "progress": batch_progress(states.values()),
+            "tasks": [states[task_id] for task_id in task_ids],
+        }
+        if args.markdown:
+            print_batch_status_for_codex(data)
+        else:
+            print_json(data)
+        return
+
+    data = load_or_query_task_status(task_ids[0], out_dir, args.local)
     if args.markdown:
         print_status_for_codex(data)
     else:
@@ -707,7 +1033,8 @@ def build_parser() -> argparse.ArgumentParser:
     watch.set_defaults(func=lambda a: print_json(watch_task(a)))
 
     status = sub.add_parser("status")
-    status.add_argument("--task-id", required=True)
+    status.add_argument("--task-id", nargs="+")
+    status.add_argument("--batch-id")
     status.add_argument("--out-dir")
     status.add_argument("--local", action="store_true", help="Read local state only when available")
     status.add_argument("--markdown", action="store_true", help="Print a Codex-ready status and image Markdown")
