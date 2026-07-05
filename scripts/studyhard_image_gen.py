@@ -767,10 +767,7 @@ def print_status_for_codex(data: Dict[str, Any]) -> None:
 
 
 def print_batch_status_for_codex(data: Dict[str, Any]) -> None:
-    if data.get("batch_id"):
-        print(f"batch_id: {data.get('batch_id', '')}")
     print(f"task_status: {data.get('task_status', 'unknown')}")
-    print(f"progress: {format_progress(data)}")
     tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
     for task in tasks:
         print(f"task_id: {task.get('task_id', '')} task_status: {task.get('task_status', 'unknown')} progress: {format_progress(task)}")
@@ -790,10 +787,7 @@ def print_batch_status_for_codex(data: Dict[str, Any]) -> None:
         if not printed:
             print(zh("\\u6ca1\\u6709\\u53ef\\u5c55\\u793a\\u7684\\u56fe\\u7247\\u7ed3\\u679c\\u3002"))
     elif data.get("task_status") in ("submitted", "processing", "poll_error", "unknown"):
-        if data.get("batch_id"):
-            print(zh("\\u6b63\\u5728\\u751f\\u6210\\u3002\\u4f60\\u53ef\\u4ee5\\u7a0d\\u540e\\u7528 batch_id \\u6216 task_id \\u7ee7\\u7eed\\u67e5\\u8be2\\u3002"))
-        else:
-            print(zh("\\u6b63\\u5728\\u751f\\u6210\\u3002\\u4f60\\u53ef\\u4ee5\\u7a0d\\u540e\\u7528 task_id \\u7ee7\\u7eed\\u67e5\\u8be2\\u3002"))
+        print(zh("\\u6b63\\u5728\\u751f\\u6210\\u3002\\u4f60\\u53ef\\u4ee5\\u7a0d\\u540e\\u7528 task_id \\u7ee7\\u7eed\\u67e5\\u8be2\\u3002"))
     elif data.get("task_status") in ("failed", "timeout"):
         print(zh("\\u751f\\u6210\\u672a\\u5b8c\\u6210\\uff0c\\u8bf7\\u67e5\\u770b\\u4e0a\\u65b9 task \\u72b6\\u6001\\u3002"))
 
@@ -818,7 +812,7 @@ def handle_batch_submit(args: argparse.Namespace, result: Dict[str, Any]) -> Non
         state["result_urls"] = []
         write_state(task_id, state, out_dir)
         states[task_id] = state
-    batch_path = write_current_batch_state(
+    write_current_batch_state(
         batch_id,
         task_ids,
         states,
@@ -830,21 +824,19 @@ def handle_batch_submit(args: argparse.Namespace, result: Dict[str, Any]) -> Non
             for task_id in task_ids:
                 spawn_watcher(task_id, args.interval, args.timeout, str(out_dir))
         print_json({
-            "batch_id": batch_id,
             "task_ids": task_ids,
+            "tasks": [{"task_id": task_id, "task_status": states[task_id].get("task_status"), "progress": format_progress(states[task_id])} for task_id in task_ids],
             "task_status": "submitted",
-            "batch_state_file": str(batch_path),
             "watch_started": bool(args.watch),
             "submit_errors": result.get("submit_errors", []),
-            "message": zh("\\u591a\\u56fe\\u4efb\\u52a1\\u5df2\\u62c6\\u5206\\u63d0\\u4ea4\\u3002\\u4f60\\u53ef\\u4ee5\\u7a0d\\u540e\\u7528 batch_id \\u6216 task_id \\u67e5\\u8be2\\u7ed3\\u679c\\u3002"),
+            "message": zh("\\u591a\\u56fe\\u4efb\\u52a1\\u5df2\\u62c6\\u5206\\u63d0\\u4ea4\\u3002\\u4f60\\u53ef\\u4ee5\\u7a0d\\u540e\\u7528 task_id \\u67e5\\u8be2\\u7ed3\\u679c\\u3002"),
         })
         return
 
     print_json({
-        "batch_id": batch_id,
         "task_ids": task_ids,
+        "tasks": [{"task_id": task_id, "task_status": states[task_id].get("task_status"), "progress": format_progress(states[task_id])} for task_id in task_ids],
         "task_status": "submitted",
-        "batch_state_file": str(batch_path),
         "submit_errors": result.get("submit_errors", []),
         "message": zh("\\u591a\\u56fe\\u4efb\\u52a1\\u5df2\\u62c6\\u5206\\u63d0\\u4ea4\\uff0c\\u5f00\\u59cb\\u524d\\u53f0\\u8f6e\\u8be2\\u6240\\u6709 task_id\\u3002"),
     })
@@ -857,10 +849,7 @@ def handle_batch_submit(args: argparse.Namespace, result: Dict[str, Any]) -> Non
         progress=True,
     )
     final_state = watch_tasks(watch_args)
-    if str(final_state.get("task_status", "unknown")) in ("succeed", "partial_failed"):
-        print_batch_status_for_codex(final_state)
-    else:
-        print_json(final_state)
+    print_batch_status_for_codex(final_state)
 
 
 def handle_submit(args: argparse.Namespace, fn) -> None:

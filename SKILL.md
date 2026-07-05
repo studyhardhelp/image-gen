@@ -56,7 +56,7 @@ For edit and variation requests, require an image path or already available loca
 
 Always submit through the async endpoints and wait in the foreground by default. Do not add `--no-wait` unless the user explicitly asks only to submit, not to wait, or wants to do other work immediately.
 
-The command prints `task_id` for a single-image request, or `batch_id` plus all `task_ids` for a multi-image generation request. It writes local state files, then polls every `10` seconds by default. It prints `task_status` and `progress` on each poll when the gateway returns progress fields. For multi-image generation, each poll prints progress for every task id. In user-facing updates during waiting, always include the latest progress value, for example "任务 873... 正在生成，进度 40%". If the command reports `progress: unknown`, say that the gateway has not returned a progress percentage yet. Do not say only "processing" when a progress value is available. If the user interrupts waiting, keep the task id or batch id and tell them they can ask for the result later; answer later status/result requests by running `status --task-id <task_id> --markdown` or `status --batch-id <batch_id> --markdown`.
+The command prints `task_id` for a single-image request, or all real server `task_ids` for a multi-image generation request. It may keep an internal local batch state, but do not show or mention that internal batch id to the user. It writes local state files, then polls every `10` seconds by default. It prints `task_status` and `progress` on each poll when the gateway returns progress fields. For multi-image generation, each poll prints progress for every task id. In user-facing updates during waiting, list each real task id on its own line with the latest progress, for example "任务 873... 正在生成，进度 40%". If the command reports `progress: unknown`, say that the gateway has not returned a progress percentage yet. Do not summarize multi-image progress as only one aggregate percentage when per-task progress is available. If the user interrupts waiting, keep the task ids and tell them they can ask for the result later; answer later status/result requests by running `status --task-id <task_id> [<task_id> ...] --markdown`.
 
 ## Commands
 
@@ -96,10 +96,10 @@ Check status or resume after interruption:
 python3 scripts/studyhard_image_gen.py status --task-id "<task_id>" --markdown
 ```
 
-Check a multi-image generation batch:
+Check multiple image tasks:
 
 ```bash
-python3 scripts/studyhard_image_gen.py status --batch-id "<batch_id>" --markdown
+python3 scripts/studyhard_image_gen.py status --task-id "<task_id_1>" "<task_id_2>" "<task_id_3>" --markdown
 ```
 
 ## Returning Results
