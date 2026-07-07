@@ -12,6 +12,7 @@ import json
 import mimetypes
 import os
 import posixpath
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,7 @@ DEFAULT_TIMEOUT = 900
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_BASE_URL = "https://api.studyhard.help"
 TERMINAL_STATUSES = {"succeed", "failed", "timeout"}
+SUPPORTED_RATIOS = ("1:1", "3:4", "4:3", "16:9", "9:16", "5:4", "21:9", "3:2", "4:5", "2:3")
 
 
 class UserFacingError(Exception):
@@ -292,17 +294,48 @@ def add_optional_body_fields(target: Dict[str, Any], args: argparse.Namespace, n
             target[name] = value
 
 
+def parse_prompt_generation_params(prompt: str) -> Dict[str, str]:
+    params: Dict[str, str] = {}
+    if not prompt:
+        return params
+
+    size_match = re.search(r"(?<!\d)([1-9]\d{2,4})\s*(?:x|×|\*|＊|乘|by)\s*([1-9]\d{2,4})(?!\d)", prompt, re.IGNORECASE)
+    if size_match:
+        params["size"] = f"{size_match.group(1)}x{size_match.group(2)}"
+
+    resolution_match = re.search(r"(?<![A-Za-z0-9_-])([124])\s*[kK](?![A-Za-z0-9_-])", prompt)
+    if resolution_match:
+        params["resolution"] = f"{resolution_match.group(1)}k"
+
+    ratio_match = re.search(r"(?<!\d)(21|16|9|5|4|3|2|1)\s*[:：]\s*(21|16|9|5|4|3|2|1)(?!\d)", prompt)
+    if ratio_match:
+        ratio = f"{ratio_match.group(1)}:{ratio_match.group(2)}"
+        if ratio in SUPPORTED_RATIOS:
+            params["ratio"] = ratio
+
+    return params
+
+
 def build_generation_body(args: argparse.Namespace, count: int = 1) -> Dict[str, Any]:
+    parsed = parse_prompt_generation_params(args.prompt)
+    size = args.size or parsed.get("size")
+    resolution = args.resolution or parsed.get("resolution")
+    ratio = args.ratio or parsed.get("ratio")
+    if resolution is not None and ratio is None:
+        ratio = "1:1"
+    if size is None and resolution is None and ratio is None:
+        size = DEFAULT_SIZE
     body: Dict[str, Any] = {
         "model": model_or_default(args.model),
         "prompt": args.prompt,
         "n": count,
     }
-    if args.resolution or args.ratio:
-        body["resolution"] = args.resolution or "1k"
-        body["ratio"] = args.ratio or "1:1"
-    else:
-        body["size"] = args.size
+    if size is not None:
+        body["size"] = size
+    if resolution is not None:
+        body["resolution"] = resolution
+    if ratio is not None:
+        body["ratio"] = ratio
     add_optional_body_fields(body, args, ("quality", "background", "output_format", "response_format", "user"))
     return body
 
@@ -370,7 +403,7 @@ def submit_edit(args: argparse.Namespace) -> Dict[str, Any]:
     fields: Dict[str, Any] = {
         "model": model_or_default(args.model),
         "prompt": args.prompt,
-        "size": args.size,
+        "size": args.size or DEFAULT_SIZE,
         "n": args.n,
     }
     fields.update(optional_fields(args, ("quality", "background", "response_format", "user")))
@@ -405,7 +438,7 @@ def submit_variation(args: argparse.Namespace) -> Dict[str, Any]:
         fail(f"Image path is not a file: {image}")
     fields: Dict[str, Any] = {
         "model": model_or_default(args.model),
-        "size": args.size,
+        "size": args.size or DEFAULT_SIZE,
         "n": args.n,
     }
     fields.update(optional_fields(args, ("response_format", "user")))
@@ -977,7 +1010,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_common_submit(p: argparse.ArgumentParser) -> None:
         p.add_argument("--model")
-        p.add_argument("--size", default=DEFAULT_SIZE)
+        p.add_argument("--size")
         p.add_argument("--n", type=int, default=1)
         p.add_argument("--response-format", choices=["url", "b64_json"])
         p.add_argument("--user")
@@ -992,7 +1025,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_submit(gen)
     gen.add_argument("--prompt", required=True)
     gen.add_argument("--resolution", choices=["1k", "2k", "4k"])
-    gen.add_argument("--ratio", choices=["1:1", "3:4", "4:3", "16:9", "9:16"])
+    gen.add_argument("--ratio", choices=SUPPORTED_RATIOS)
     gen.add_argument("--quality", choices=["auto", "low", "medium", "high", "standard", "hd"])
     gen.add_argument("--background", choices=["auto", "transparent", "opaque"])
     gen.add_argument("--output-format", choices=["png", "jpeg", "webp"])
