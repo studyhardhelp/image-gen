@@ -426,33 +426,6 @@ def submit_edit(args: argparse.Namespace) -> Dict[str, Any]:
     return http_multipart(route_url(base_url, "/async/v1/images/edits"), api_key, fields, files)
 
 
-def submit_variation(args: argparse.Namespace) -> Dict[str, Any]:
-    if args.dry_run:
-        base_url, api_key = env("STUDYHARD_IMAGE_BASE_URL", DEFAULT_BASE_URL), ""
-    else:
-        base_url, api_key = require_config()
-    image = Path(args.image)
-    if not image.exists():
-        fail(f"Image file not found: {image}")
-    if not image.is_file():
-        fail(f"Image path is not a file: {image}")
-    fields: Dict[str, Any] = {
-        "model": model_or_default(args.model),
-        "size": args.size or DEFAULT_SIZE,
-        "n": args.n,
-    }
-    fields.update(optional_fields(args, ("response_format", "user")))
-    if args.dry_run:
-        return {
-            "dry_run": True,
-            "method": "POST",
-            "url": route_url(base_url, "/async/v1/images/variations"),
-            "fields": fields,
-            "files": {"image": str(image)},
-        }
-    return http_multipart(route_url(base_url, "/async/v1/images/variations"), api_key, fields, {"image": image})
-
-
 def extract_urls(data: Dict[str, Any]) -> List[str]:
     urls: List[str] = []
     result = data.get("result")
@@ -1039,12 +1012,6 @@ def build_parser() -> argparse.ArgumentParser:
     edit.add_argument("--quality", choices=["auto", "low", "medium", "high", "standard", "hd"])
     edit.add_argument("--background", choices=["auto", "transparent", "opaque"])
     edit.set_defaults(func=lambda a: handle_submit(a, submit_edit))
-
-    variation = sub.add_parser("submit-variation")
-    add_common_submit(variation)
-    variation.set_defaults(n=4)
-    variation.add_argument("--image", required=True)
-    variation.set_defaults(func=lambda a: handle_submit(a, submit_variation))
 
     watch = sub.add_parser("watch")
     watch.add_argument("--task-id", required=True)

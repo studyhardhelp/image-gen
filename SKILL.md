@@ -1,6 +1,6 @@
 ---
 name: image-gen
-description: Use this skill when a user asks Codex to generate images from text, edit or modify an existing image, or create image variations / one-image-to-many-images using the StudyHard token-api OpenAI-compatible image gateway. It submits asynchronous image tasks to image generation, edit, and variation endpoints, waits by default with foreground polling, records task state locally, prints task progress, and returns generated image URLs or Markdown image previews.
+description: Use this skill when a user asks Codex to generate images from text, or edit or modify an existing image using the StudyHard token-api OpenAI-compatible image gateway. It submits asynchronous image tasks to image generation and edit endpoints, waits by default with foreground polling, records task state locally, prints task progress, and returns generated image URLs or Markdown image previews.
 ---
 
 # StudyHard Image Gen
@@ -35,14 +35,13 @@ If required config is missing, explain that Codex config must contain an API key
 
 - Text-to-image, draw, create, generate from prompt: run `submit-generation`.
 - Edit, modify, replace, remove, or transform an existing image: run `submit-edit` with `--image` and optional `--mask`.
-- Variation, one image to many images, make similar images, or image-to-image variants: run `submit-variation` with `--image`.
 - User asks whether an image is ready, asks for a result, or gives a task id: run `status`.
 
 ## Parameter Extraction
 
 Extract explicit user requirements into CLI arguments instead of burying them in the prompt:
 
-- Count: extract Arabic and Chinese counts into `--n <count>`. Examples: "生成 3 张" -> `--n 3`; "三张/3张/三幅/三个版本" -> `--n 3`; "一张/一幅/一个版本" -> `--n 1`; "两张/二张/两幅/两个版本" -> `--n 2`; "四张/四幅/四个版本" -> `--n 4`. Use generation default `1` and variation default `4` only when the user does not specify a count. For text-to-image generation, `--n` means how many separate image tasks the skill should submit; when `--n > 1`, the entrypoint submits that many generation requests, each with gateway JSON `"n": 1`, and polls all returned task ids together. Do not rely on one gateway generation request with `"n" > 1`.
+- Count: extract Arabic and Chinese counts into `--n <count>`. Examples: "生成 3 张" -> `--n 3`; "三张/3张/三幅/三个版本" -> `--n 3`; "一张/一幅/一个版本" -> `--n 1`; "两张/二张/两幅/两个版本" -> `--n 2`; "四张/四幅/四个版本" -> `--n 4`. Use generation default `1` only when the user does not specify a count. For text-to-image generation, `--n` means how many separate image tasks the skill should submit; when `--n > 1`, the entrypoint submits that many generation requests, each with gateway JSON `"n": 1`, and polls all returned task ids together. Do not rely on one gateway generation request with `"n" > 1`.
 - Size/aspect for generation: pass every explicit size-related parameter that can be extracted; do not make `--size` mutually exclusive with `--resolution` or `--ratio`. If the user gives an exact pixel size such as `1280x720`, `1280×720`, `1280*720`, `1280＊720`, `1280 乘 720`, or `1280 by 720`, pass `--size 1280x720`. The entrypoint also parses these exact pixel-size forms from `--prompt` as a fallback when Codex misses the CLI argument. When the user gives `1k`, `2k`, or `4k`, pass `--resolution 1k|2k|4k`. When the user gives a ratio, pass `--ratio`; supported ratios include `1:1`, `3:4`, `4:3`, `16:9`, `9:16`, `5:4`, `21:9`, `3:2`, `4:5`, and `2:3`. If the user gives only a resolution, assume `--ratio 1:1`. The gateway maps common resolution/ratio pairs to OpenAI sizes: `1k`: `1:1=1024x1024`, `3:4=768x1024`, `4:3=1024x768`, `16:9=1024x576`, `9:16=576x1024`; `2k`: `1:1=2048x2048`, `3:4=1536x2048`, `4:3=2048x1536`, `16:9=2048x1152`, `9:16=1152x2048`; `4k`: `1:1=2880x2880`, `3:4=2448x3264`, `4:3=3264x2448`, `16:9=3840x2160`, `9:16=2160x3840`. If no exact pixel size is specified, use the default `--size 1024x1024` unless a better explicit size was requested.
 - Quality: "高清", "high quality", "精细" -> `--quality high`; "快速", "低成本", "草图" -> `--quality low`; "standard/hd" -> pass the explicit value.
 - Background: "透明背景", "transparent background", "抠图/无背景" -> `--background transparent`; "不透明背景" -> `--background opaque`.
@@ -50,7 +49,7 @@ Extract explicit user requirements into CLI arguments instead of burying them in
 - User field: only pass `--user` when the user explicitly provides an end-user identifier.
 - Model: use `gpt-image-2` unless the user names another available model or the gateway requires one for a specific operation.
 
-For edit and variation requests, require an image path or already available local image file. For edits, pass `--mask` only when the user provides a mask image. If a requested parameter is unsupported by the chosen operation, omit the parameter and keep the user's visual instruction in `--prompt`.
+For edit requests, require an image path or already available local image file. Pass `--mask` only when the user provides a mask image. If a requested parameter is unsupported by the chosen operation, omit the parameter and keep the user's visual instruction in `--prompt`.
 
 ## Waiting Behavior
 
@@ -75,14 +74,6 @@ python3 scripts/studyhard_image_gen.py submit-edit --image "<path>" --prompt "<p
 ```
 
 Optional edit parameters: `--mask`, `--quality`, `--background`, `--response-format`, `--user`.
-
-Variation:
-
-```bash
-python3 scripts/studyhard_image_gen.py submit-variation --image "<path>" --model "<model>" --size "1024x1024" --n 4
-```
-
-Optional variation parameters: `--response-format`, `--user`.
 
 Submit without waiting only when explicitly requested:
 
@@ -119,6 +110,5 @@ Use these defaults unless the user says otherwise:
 - `size`: `1024x1024`
 - `n` for generation: `1`
 - `model`: `gpt-image-2`
-- `n` for variations: `4`
 - poll interval: `10` seconds
 - watcher timeout: `900` seconds

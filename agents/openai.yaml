@@ -1,6 +1,6 @@
 interface:
   display_name: "StudyHard Image Gen"
-  short_description: "Submit async StudyHard image generation, edits, and variations."
+  short_description: "Submit async StudyHard image generation and edits."
   default_prompt: "Use $image-gen to generate an image from this prompt."
 policy:
   allow_implicit_invocation: true
