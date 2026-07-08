@@ -27,7 +27,7 @@ Environment variables are optional overrides only:
 - `STUDYHARD_IMAGE_BASE_URL`: override the default base URL `https://api.studyhard.help` for debugging or staging.
 - `STUDYHARD_IMAGE_API_KEY`: override Codex provider/auth API key.
 - `STUDYHARD_IMAGE_MODEL`: override the default image model `gpt-image-2`.
-- `STUDYHARD_IMAGE_OUT_DIR`: directory for local task state files. Defaults to the system temporary directory under `studyhard-images`.
+- `STUDYHARD_IMAGE_OUT_DIR`: directory for local task state files. Defaults to `studyhard-images` in the current project directory.
 
 If required config is missing, explain that Codex config must contain an API key, or use the `STUDYHARD_IMAGE_API_KEY` environment override.
 
@@ -95,10 +95,11 @@ python3 scripts/studyhard_image_gen.py status --task-id "<task_id_1>" "<task_id_
 
 ## Returning Results
 
-When `status` or `watch` reports `succeed`, the command caches generated images locally under the task state directory and prints local absolute paths first. Render every local path as a Markdown image:
+When `status` or `watch` reports `succeed`, the command stores task state JSON and generated images under `studyhard-images/YYYYMMDD/`, where `YYYYMMDD` is the current local date. Use the filename from the result URL for images. Render every local path as a Markdown image linked to the same local file, followed by a direct local download link. Fall back to the remote result URL only when local caching fails:
 
 ```markdown
-![generated image](/absolute/path/to/generated-image.png)
+[![generated image](/absolute/path/to/studyhard-images/20260708/result-file.png)](/absolute/path/to/studyhard-images/20260708/result-file.png)
+[download result-file.png](/absolute/path/to/studyhard-images/20260708/result-file.png)
 ```
 
 If local caching fails for an image, the command falls back to printing its remote URL. If `result_url` contains comma-separated URLs, split them and render each image separately. If a task is still `submitted` or `processing`, say it is still generating and include the task id.

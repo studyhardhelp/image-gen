@@ -15,7 +15,6 @@ import posixpath
 import re
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -193,11 +192,16 @@ def default_out_dir() -> Path:
     configured = env("STUDYHARD_IMAGE_OUT_DIR")
     if configured:
         return Path(configured)
-    return Path(tempfile.gettempdir()) / "studyhard-images"
+    return Path.cwd() / "studyhard-images"
+
+
+def current_date_dir(out_dir: Optional[Path] = None) -> Path:
+    target = out_dir or default_out_dir()
+    return target / time.strftime("%Y%m%d")
 
 
 def task_dir(task_id: str, out_dir: Optional[Path] = None, create: bool = False) -> Path:
-    target = out_dir or default_out_dir()
+    target = current_date_dir(out_dir)
     path = target / task_id
     if create:
         path.mkdir(parents=True, exist_ok=True)
@@ -205,14 +209,14 @@ def task_dir(task_id: str, out_dir: Optional[Path] = None, create: bool = False)
 
 
 def state_path(task_id: str, out_dir: Optional[Path] = None, create: bool = False) -> Path:
-    target = out_dir or default_out_dir()
+    target = current_date_dir(out_dir)
     if create:
         target.mkdir(parents=True, exist_ok=True)
     return target / f"{task_id}.json"
 
 
 def batch_state_path(batch_id: str, out_dir: Optional[Path] = None, create: bool = False) -> Path:
-    target = out_dir or default_out_dir()
+    target = current_date_dir(out_dir)
     if create:
         target.mkdir(parents=True, exist_ok=True)
     return target / f"batch-{batch_id}.json"
@@ -582,12 +586,25 @@ def extension_from_content_type(content_type: str, fallback: str) -> str:
     return fallback
 
 
-def download_image(url: str, target_without_ext: Path) -> Path:
+def result_filename_from_url(url: str, index: int) -> str:
+    path = parse.urlparse(url).path
+    name = parse.unquote(posixpath.basename(path)).strip()
+    if not name:
+        name = f"image-{index}{extension_from_url(url)}"
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+    if not posixpath.splitext(name)[1]:
+        name += extension_from_url(url)
+    return name
+
+
+def result_image_path(url: str, index: int, out_dir: Optional[Path] = None) -> Path:
+    return current_date_dir(out_dir) / result_filename_from_url(url, index)
+
+
+def download_image(url: str, target: Path) -> Path:
     fallback_ext = extension_from_url(url)
-    existing = sorted(target_without_ext.parent.glob(target_without_ext.name + ".*"))
-    for path in existing:
-        if path.is_file() and path.stat().st_size > 0:
-            return path.resolve()
+    if target.is_file() and target.stat().st_size > 0:
+        return target.resolve()
 
     headers = {
         "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
@@ -596,8 +613,9 @@ def download_image(url: str, target_without_ext: Path) -> Path:
     req = request.Request(url, headers=headers, method="GET")
     with request.urlopen(req, timeout=120) as resp:
         content_type = resp.headers.get("Content-Type", "")
-        ext = extension_from_content_type(content_type, fallback_ext)
-        target = target_without_ext.with_suffix(ext)
+        if not target.suffix:
+            target = target.with_suffix(extension_from_content_type(content_type, fallback_ext))
+        target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(target.suffix + ".tmp")
         tmp.write_bytes(resp.read())
         tmp.replace(target)
@@ -613,10 +631,9 @@ def cache_result_images(data: Dict[str, Any], task_id: str, out_dir: Optional[Pa
         data["local_image_paths"] = []
         return data
 
-    images_dir = task_dir(task_id, out_dir, create=True)
     for index, url in enumerate(urls, start=1):
         try:
-            path = download_image(str(url), images_dir / f"image-{index}")
+            path = download_image(str(url), result_image_path(str(url), index, out_dir))
             cached.append(str(path))
         except Exception as exc:
             cached.append(None)
@@ -828,6 +845,14 @@ def zh(text: str) -> str:
     return text.encode("utf-8").decode("unicode_escape")
 
 
+def print_image_markdown(index: int, url: str, path: Optional[str]) -> None:
+    image_target = path or url
+    download_target = image_target
+    filename = Path(path).name if path else f"image-{index}{extension_from_url(url)}"
+    print(f"[![generated image]({image_target})]({download_target})")
+    print(f"[download {filename}]({download_target})")
+
+
 def print_status_for_codex(data: Dict[str, Any]) -> None:
     status = data.get("task_status", "unknown")
     task_id = data.get("task_id", "")
@@ -840,7 +865,7 @@ def print_status_for_codex(data: Dict[str, Any]) -> None:
         print(zh("\\u751f\\u6210\\u5b8c\\u6210\\uff1a"))
         for index, url in enumerate(urls):
             path = local_paths[index] if index < len(local_paths) else None
-            print(f"![generated image]({path or url})")
+            print_image_markdown(index + 1, str(url), path)
         if data.get("local_image_errors"):
             print(zh("\\u90e8\\u5206\\u56fe\\u7247\\u672c\\u5730\\u7f13\\u5b58\\u5931\\u8d25\\uff0c\\u5df2\\u56de\\u9000\\u5230\\u8fdc\\u7a0b URL\\u3002"))
     elif status in ("submitted", "processing", "poll_error", "unknown"):
@@ -868,7 +893,7 @@ def print_batch_status_for_codex(data: Dict[str, Any]) -> None:
                 if not printed:
                     print(zh("\\u751f\\u6210\\u5b8c\\u6210\\uff1a"))
                     printed = True
-                print(f"![generated image]({path or url})")
+                print_image_markdown(index + 1, str(url), path)
         if not printed:
             print(zh("\\u6ca1\\u6709\\u53ef\\u5c55\\u793a\\u7684\\u56fe\\u7247\\u7ed3\\u679c\\u3002"))
     elif data.get("task_status") in ("submitted", "processing", "poll_error", "unknown"):
