@@ -95,11 +95,11 @@ python3 scripts/studyhard_image_gen.py status --task-id "<task_id_1>" "<task_id_
 
 ## Returning Results
 
-When `status` or `watch` reports `succeed`, the command stores task state JSON and generated images under `studyhard-images/YYYYMMDD/`, where `YYYYMMDD` is the current local date. Use the filename from the result URL for images. Render every local path as a Markdown image linked to the same local file, followed by a direct local download link. Fall back to the remote result URL only when local caching fails:
+When `status` or `watch` reports `succeed`, the command stores task state JSON and generated images under `studyhard-images/YYYYMMDD/`, where `YYYYMMDD` is the current local date. Use the filename from the result URL for images. Render every local path first as a plain Markdown image preview, then again as a Markdown image linked to the same local file. Fall back to the remote result URL only when local caching fails:
 
 ```markdown
+![generated image](/absolute/path/to/studyhard-images/20260708/result-file.png)
 [![generated image](/absolute/path/to/studyhard-images/20260708/result-file.png)](/absolute/path/to/studyhard-images/20260708/result-file.png)
-[download result-file.png](/absolute/path/to/studyhard-images/20260708/result-file.png)
 ```
 
 If local caching fails for an image, the command falls back to printing its remote URL. If `result_url` contains comma-separated URLs, split them and render each image separately. If a task is still `submitted` or `processing`, say it is still generating and include the task id.

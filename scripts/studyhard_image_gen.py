@@ -847,10 +847,8 @@ def zh(text: str) -> str:
 
 def print_image_markdown(index: int, url: str, path: Optional[str]) -> None:
     image_target = path or url
-    download_target = image_target
-    filename = Path(path).name if path else f"image-{index}{extension_from_url(url)}"
-    print(f"[![generated image]({image_target})]({download_target})")
-    print(f"[download {filename}]({download_target})")
+    print(f"![generated image]({image_target})")
+    print(f"[![generated image]({image_target})]({image_target})")
 
 
 def print_status_for_codex(data: Dict[str, Any]) -> None:
@@ -862,7 +860,7 @@ def print_status_for_codex(data: Dict[str, Any]) -> None:
     print(f"task_status: {status}")
     print(f"progress: {format_progress(data)}")
     if status == "succeed" and (local_paths or urls):
-        print(zh("\\u751f\\u6210\\u5b8c\\u6210\\uff1a"))
+        print(zh("\\u751f\\u6210\\u597d\\u4e86\\uff1a"))
         for index, url in enumerate(urls):
             path = local_paths[index] if index < len(local_paths) else None
             print_image_markdown(index + 1, str(url), path)
@@ -891,7 +889,7 @@ def print_batch_status_for_codex(data: Dict[str, Any]) -> None:
             for index, url in enumerate(urls):
                 path = local_paths[index] if index < len(local_paths) else None
                 if not printed:
-                    print(zh("\\u751f\\u6210\\u5b8c\\u6210\\uff1a"))
+                    print(zh("\\u751f\\u6210\\u597d\\u4e86\\uff1a"))
                     printed = True
                 print_image_markdown(index + 1, str(url), path)
         if not printed:
