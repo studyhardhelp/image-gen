@@ -955,7 +955,7 @@ def handle_batch_submit(args: argparse.Namespace, result: Dict[str, Any]) -> Non
         interval=args.interval,
         timeout=args.timeout,
         out_dir=str(out_dir),
-        progress=True,
+        progress=args.progress,
     )
     final_state = watch_tasks(watch_args)
     print_batch_status_for_codex(final_state)
@@ -1002,7 +1002,7 @@ def handle_submit(args: argparse.Namespace, fn) -> None:
         interval=args.interval,
         timeout=args.timeout,
         out_dir=str(out_dir),
-        progress=True,
+        progress=args.progress,
     )
     final_state = watch_task(watch_args)
     if str(final_state.get("task_status", "unknown")) == "succeed":
@@ -1094,6 +1094,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--dry-run", action="store_true", help="Print the gateway request without submitting")
         p.add_argument("--no-wait", action="store_true", help="Submit the task and return immediately")
         p.add_argument("--watch", action="store_true", help="With --no-wait, start a detached background watcher")
+        p.add_argument("--progress", action="store_true", help="Print progress on every poll while waiting")
         p.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
         p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
         p.add_argument("--out-dir")
