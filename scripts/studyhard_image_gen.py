@@ -55,15 +55,84 @@ def codex_home() -> Path:
     return Path.home() / ".codex"
 
 
+def strip_toml_comment(line: str) -> str:
+    quote: Optional[str] = None
+    escaped = False
+    for index, char in enumerate(line):
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif quote == "'":
+            if char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == "#":
+            return line[:index].rstrip()
+    return line.rstrip()
+
+
+def parse_toml_scalar(value: str) -> Any:
+    value = value.strip()
+    if value.startswith('"') and value.endswith('"'):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value[1:-1]
+    if value.startswith("'") and value.endswith("'"):
+        return value[1:-1]
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    return value
+
+
+def set_nested_value(root: Dict[str, Any], path: List[str], value: Any) -> None:
+    current = root
+    for part in path[:-1]:
+        next_value = current.setdefault(part, {})
+        if not isinstance(next_value, dict):
+            return
+        current = next_value
+    current[path[-1]] = value
+
+
+def parse_codex_config_fallback(text: str) -> Dict[str, Any]:
+    """Parse the simple TOML shape Codex uses for provider tokens."""
+    data: Dict[str, Any] = {}
+    current_path: List[str] = []
+    for raw_line in text.splitlines():
+        line = strip_toml_comment(raw_line).strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]") and not line.startswith("[["):
+            current_path = [part.strip().strip('"').strip("'") for part in line[1:-1].split(".") if part.strip()]
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key_path = [part.strip().strip('"').strip("'") for part in key.split(".") if part.strip()]
+        if not key_path:
+            continue
+        set_nested_value(data, current_path + key_path, parse_toml_scalar(value))
+    return data
+
+
 def load_codex_config() -> Dict[str, Any]:
     config_path = codex_home() / "config.toml"
     if not config_path.exists():
         return {}
-    if tomllib is None:
-        fail("Python 3.11 or newer is required to read Codex config.toml. Use python3.11+, or set STUDYHARD_IMAGE_API_KEY.")
     try:
-        with config_path.open("rb") as fh:
-            return tomllib.load(fh)
+        if tomllib is not None:
+            with config_path.open("rb") as fh:
+                return tomllib.load(fh)
+        return parse_codex_config_fallback(config_path.read_text(encoding="utf-8"))
     except Exception as exc:
         fail(f"Could not read Codex config at {config_path}: {exc}")
 
