@@ -28,7 +28,8 @@ except ModuleNotFoundError:  # Python < 3.11
     tomllib = None  # type: ignore[assignment]
 
 DEFAULT_SIZE = "1024x1024"
-DEFAULT_INTERVAL = 10
+MIN_INTERVAL = 15
+DEFAULT_INTERVAL = 15
 DEFAULT_TIMEOUT = 900
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_BASE_URL = "https://api.studyhard.help"
@@ -42,6 +43,12 @@ class UserFacingError(Exception):
 
 def fail(message: str) -> None:
     raise UserFacingError(message)
+
+
+def validate_interval(interval: int) -> None:
+    if interval < MIN_INTERVAL:
+        fail(f"--interval must be at least {MIN_INTERVAL} seconds.")
+
 
 def env(name: str, default: Optional[str] = None) -> Optional[str]:
     value = os.environ.get(name)
@@ -630,6 +637,7 @@ def query_task(task_id: str) -> Dict[str, Any]:
 
 
 def watch_task(args: argparse.Namespace) -> Dict[str, Any]:
+    validate_interval(args.interval)
     task_id = args.task_id
     out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
     deadline = time.time() + args.timeout if args.timeout and args.timeout > 0 else None
@@ -709,6 +717,7 @@ def write_current_batch_state(
 
 
 def watch_tasks(args: argparse.Namespace) -> Dict[str, Any]:
+    validate_interval(args.interval)
     task_ids = [str(task_id) for task_id in args.task_ids]
     batch_id = args.batch_id
     out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
@@ -780,6 +789,7 @@ def watch_tasks(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def spawn_watcher(task_id: str, interval: int, timeout: int, out_dir: Optional[str]) -> None:
+    validate_interval(interval)
     cmd = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -868,6 +878,7 @@ def print_batch_status_for_codex(data: Dict[str, Any]) -> None:
 
 
 def handle_batch_submit(args: argparse.Namespace, result: Dict[str, Any]) -> None:
+    validate_interval(args.interval)
     task_ids = [str(task_id) for task_id in result.get("task_ids", []) if task_id]
     if not task_ids:
         print_json(result)
@@ -928,6 +939,7 @@ def handle_batch_submit(args: argparse.Namespace, result: Dict[str, Any]) -> Non
 
 
 def handle_submit(args: argparse.Namespace, fn) -> None:
+    validate_interval(args.interval)
     result = fn(args)
     if result.get("dry_run"):
         print_json(result)

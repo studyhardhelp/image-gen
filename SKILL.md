@@ -55,7 +55,7 @@ For edit requests, require an image path or already available local image file. 
 
 Always submit through the async endpoints and wait in the foreground by default. Do not add `--no-wait` unless the user explicitly asks only to submit, not to wait, or wants to do other work immediately.
 
-The command prints `task_id` for a single-image request, or all real server `task_ids` for a multi-image generation request. It may keep an internal local batch state, but do not show or mention that internal batch id to the user. It writes local state files, then polls every `10` seconds by default. It prints `task_status` and `progress` on each poll when the gateway returns progress fields. For multi-image generation, each poll prints progress for every task id. In user-facing updates during waiting, list each real task id on its own line with the latest progress, for example "任务 873... 正在生成，进度 40%". If the command reports `progress: unknown`, say that the gateway has not returned a progress percentage yet. Do not summarize multi-image progress as only one aggregate percentage when per-task progress is available. If the user interrupts waiting, keep the task ids and tell them they can ask for the result later; answer later status/result requests by running `status --task-id <task_id> [<task_id> ...] --markdown`.
+The command prints `task_id` for a single-image request, or all real server `task_ids` for a multi-image generation request. It may keep an internal local batch state, but do not show or mention that internal batch id to the user. It writes local state files, then polls every `15` seconds by default. The minimum accepted poll interval is `15` seconds. It prints `task_status` and `progress` on each poll when the gateway returns progress fields. For multi-image generation, each poll prints progress for every task id. In user-facing updates during waiting, list each real task id on its own line with the latest progress, for example "任务 873... 正在生成，进度 40%". If the command reports `progress: unknown`, say that the gateway has not returned a progress percentage yet. Do not summarize multi-image progress as only one aggregate percentage when per-task progress is available. If the user interrupts waiting, keep the task ids and tell them they can ask for the result later; answer later status/result requests by running `status --task-id <task_id> [<task_id> ...] --markdown`.
 
 ## Commands
 
@@ -110,5 +110,5 @@ Use these defaults unless the user says otherwise:
 - `size`: `1024x1024`
 - `n` for generation: `1`
 - `model`: `gpt-image-2`
-- poll interval: `10` seconds
+- poll interval: `15` seconds
 - watcher timeout: `900` seconds
