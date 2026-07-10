@@ -110,6 +110,12 @@ When `status` or `watch` reports `succeed`, the command stores task state JSON a
 
 If local caching fails for an image, the command falls back to printing its remote URL. If `result_url` contains comma-separated URLs, split them and render each image separately. If a task is still `submitted` or `processing`, say it is still generating and include the task id.
 
+After showing completed image results, ask the user whether they need a layered PSD version. Keep the follow-up concise. If the user says yes, use this exact prompt text for the PSD request:
+
+```text
+把这张图生成为一个分层的PSD文件，把产品、文字、背景、装饰元素都分到不同的图层里，确保背景是白色而不是透明的，每个元素都要在独立图层里，方便在Photoshop里编辑。
+```
+
 ## Defaults
 
 Use these defaults unless the user says otherwise:
