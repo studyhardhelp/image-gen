@@ -29,7 +29,7 @@ except ModuleNotFoundError:  # Python < 3.11
 DEFAULT_SIZE = "1024x1024"
 MIN_INTERVAL = 15
 DEFAULT_INTERVAL = 15
-DEFAULT_TIMEOUT = 900
+DEFAULT_TIMEOUT = 300
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_BASE_URL = "https://api.studyhard.help"
 TERMINAL_STATUSES = {"succeed", "failed", "timeout"}
