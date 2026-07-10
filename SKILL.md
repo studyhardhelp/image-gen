@@ -57,7 +57,7 @@ For edit requests, require an image path or already available local image file. 
 
 Always submit through the async endpoints and wait in the foreground by default. Do not add `--no-wait` unless the user explicitly asks only to submit, not to wait, or wants to do other work immediately.
 
-The command prints `task_id` for a single-image request, or all real server `task_ids` for a multi-image generation request. It may keep an internal local batch state, but do not show or mention that internal batch id to the user. It writes local state files, then polls every `15` seconds by default. The minimum accepted poll interval is `15` seconds. The default foreground wait timeout is `300` seconds; if the task is not complete after 5 minutes, stop waiting, keep the task id, and tell the user they can ask for the result later. By default, do not pass `--progress`; the command should wait quietly and print final images only when the task completes.
+The command prints `task_id` for a single-image request, or all real server `task_ids` for a multi-image generation request. It may keep an internal local batch state, but do not show or mention that internal batch id to the user. It writes local state files, then polls every `15` seconds by default. The minimum accepted poll interval is `15` seconds. The default foreground limit is `4` status requests; if the task is not complete after those requests, stop waiting, keep the task id, and tell the user they can ask for the result later. By default, do not pass `--progress`; the command should wait quietly and print final images only when the task completes.
 
 By default, do not narrate every polling tick to the user. During foreground waiting, only surface these nodes unless the user asks for a different interaction style: successful submission with task id, final success with images, and failure or timeout with the reason. If the user explicitly asks for live progress updates, pass `--progress` and report polling progress; for multi-image generation, list each real task id on its own line and do not summarize per-task progress as only one aggregate percentage when per-task progress is available. If the command reports `progress: unknown`, say that the gateway has not returned a progress percentage yet.
 
@@ -124,4 +124,5 @@ Use these defaults unless the user says otherwise:
 - `n` for generation: `1`
 - `model`: `gpt-image-2`
 - poll interval: `15` seconds
+- max foreground status requests: `4`
 - watcher timeout: `300` seconds

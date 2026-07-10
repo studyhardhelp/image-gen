@@ -30,6 +30,7 @@ DEFAULT_SIZE = "1024x1024"
 MIN_INTERVAL = 15
 DEFAULT_INTERVAL = 15
 DEFAULT_TIMEOUT = 300
+DEFAULT_MAX_POLLS = 4
 DEFAULT_IMAGE_MODEL = "gpt-image-2"
 DEFAULT_BASE_URL = "https://api.studyhard.help"
 TERMINAL_STATUSES = {"succeed", "failed", "timeout"}
@@ -47,6 +48,11 @@ def fail(message: str) -> None:
 def validate_interval(interval: int) -> None:
     if interval < MIN_INTERVAL:
         fail(f"--interval must be at least {MIN_INTERVAL} seconds.")
+
+
+def validate_max_polls(max_polls: int) -> None:
+    if max_polls < 1:
+        fail("--max-polls must be at least 1.")
 
 
 def env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -655,13 +661,17 @@ def query_task(task_id: str) -> Dict[str, Any]:
 
 def watch_task(args: argparse.Namespace) -> Dict[str, Any]:
     validate_interval(args.interval)
+    max_polls = getattr(args, "max_polls", DEFAULT_MAX_POLLS)
+    validate_max_polls(max_polls)
     task_id = args.task_id
     out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
     deadline = time.time() + args.timeout if args.timeout and args.timeout > 0 else None
     last: Dict[str, Any] = {"task_id": task_id, "task_status": "submitted"}
+    poll_count = 0
 
     while True:
         try:
+            poll_count += 1
             last = query_task(task_id)
             status = str(last.get("task_status", "unknown"))
             urls = extract_urls(last)
@@ -682,6 +692,12 @@ def watch_task(args: argparse.Namespace) -> Dict[str, Any]:
             if getattr(args, "progress", False):
                 print(f"task_id: {task_id} task_status: poll_error progress: unknown error: {exc}", flush=True)
 
+        if poll_count >= max_polls:
+            state = dict(last)
+            state["task_status"] = "timeout"
+            state["error"] = f"Stopped after {max_polls} status requests"
+            write_state(task_id, state, out_dir)
+            return state
         if deadline is not None and time.time() >= deadline:
             state = dict(last)
             state["task_status"] = "timeout"
@@ -735,6 +751,8 @@ def write_current_batch_state(
 
 def watch_tasks(args: argparse.Namespace) -> Dict[str, Any]:
     validate_interval(args.interval)
+    max_polls = getattr(args, "max_polls", DEFAULT_MAX_POLLS)
+    validate_max_polls(max_polls)
     task_ids = [str(task_id) for task_id in args.task_ids]
     batch_id = args.batch_id
     out_dir = Path(args.out_dir) if args.out_dir else default_out_dir()
@@ -743,8 +761,10 @@ def watch_tasks(args: argparse.Namespace) -> Dict[str, Any]:
         task_id: read_state(task_id, out_dir) or {"task_id": task_id, "task_status": "submitted"}
         for task_id in task_ids
     }
+    poll_count = 0
 
     while True:
+        poll_count += 1
         for task_id in task_ids:
             current_status = str(states.get(task_id, {}).get("task_status", "submitted"))
             if current_status in TERMINAL_STATUSES:
@@ -784,6 +804,24 @@ def watch_tasks(args: argparse.Namespace) -> Dict[str, Any]:
             write_batch_state(batch_id, final_state, out_dir)
             return final_state
 
+        if poll_count >= max_polls:
+            for task_id in task_ids:
+                state = states[task_id]
+                if str(state.get("task_status", "unknown")) not in TERMINAL_STATUSES:
+                    timeout_state = dict(state)
+                    timeout_state["task_status"] = "timeout"
+                    timeout_state["error"] = f"Stopped after {max_polls} status requests"
+                    write_state(task_id, timeout_state, out_dir)
+                    states[task_id] = timeout_state
+            final_state = {
+                "batch_id": batch_id,
+                "task_ids": task_ids,
+                "task_status": batch_status(states.values()),
+                "progress": batch_progress(states.values()),
+                "tasks": [states[task_id] for task_id in task_ids],
+            }
+            write_batch_state(batch_id, final_state, out_dir)
+            return final_state
         if deadline is not None and time.time() >= deadline:
             for task_id in task_ids:
                 state = states[task_id]
@@ -805,8 +843,9 @@ def watch_tasks(args: argparse.Namespace) -> Dict[str, Any]:
         time.sleep(args.interval)
 
 
-def spawn_watcher(task_id: str, interval: int, timeout: int, out_dir: Optional[str]) -> None:
+def spawn_watcher(task_id: str, interval: int, timeout: int, max_polls: int, out_dir: Optional[str]) -> None:
     validate_interval(interval)
+    validate_max_polls(max_polls)
     cmd = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -817,6 +856,8 @@ def spawn_watcher(task_id: str, interval: int, timeout: int, out_dir: Optional[s
         str(interval),
         "--timeout",
         str(timeout),
+        "--max-polls",
+        str(max_polls),
     ]
     if out_dir:
         cmd.extend(["--out-dir", out_dir])
@@ -931,7 +972,7 @@ def handle_batch_submit(args: argparse.Namespace, result: Dict[str, Any]) -> Non
     if args.no_wait:
         if args.watch:
             for task_id in task_ids:
-                spawn_watcher(task_id, args.interval, args.timeout, str(out_dir))
+                spawn_watcher(task_id, args.interval, args.timeout, args.max_polls, str(out_dir))
         print_json({
             "task_ids": task_ids,
             "tasks": [{"task_id": task_id, "task_status": states[task_id].get("task_status"), "progress": format_progress(states[task_id])} for task_id in task_ids],
@@ -954,6 +995,7 @@ def handle_batch_submit(args: argparse.Namespace, result: Dict[str, Any]) -> Non
         task_ids=task_ids,
         interval=args.interval,
         timeout=args.timeout,
+        max_polls=args.max_polls,
         out_dir=str(out_dir),
         progress=args.progress,
     )
@@ -981,7 +1023,7 @@ def handle_submit(args: argparse.Namespace, fn) -> None:
     path = write_state(task_id, state, out_dir)
     if args.no_wait:
         if args.watch:
-            spawn_watcher(task_id, args.interval, args.timeout, str(out_dir))
+            spawn_watcher(task_id, args.interval, args.timeout, args.max_polls, str(out_dir))
         print_json({
             "task_id": task_id,
             "task_status": state.get("task_status"),
@@ -1001,6 +1043,7 @@ def handle_submit(args: argparse.Namespace, fn) -> None:
         task_id=task_id,
         interval=args.interval,
         timeout=args.timeout,
+        max_polls=args.max_polls,
         out_dir=str(out_dir),
         progress=args.progress,
     )
@@ -1097,6 +1140,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--progress", action="store_true", help="Print progress on every poll while waiting")
         p.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
         p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+        p.add_argument("--max-polls", type=int, default=DEFAULT_MAX_POLLS)
         p.add_argument("--out-dir")
 
     gen = sub.add_parser("submit-generation")
@@ -1122,6 +1166,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--task-id", required=True)
     watch.add_argument("--interval", type=int, default=DEFAULT_INTERVAL)
     watch.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    watch.add_argument("--max-polls", type=int, default=DEFAULT_MAX_POLLS)
     watch.add_argument("--out-dir")
     watch.add_argument("--progress", action="store_true", help="Print progress on every poll")
     watch.set_defaults(func=lambda a: print_json(watch_task(a)))
